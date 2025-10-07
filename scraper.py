@@ -1,18 +1,18 @@
 import os
 import json
-import time
+import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
+import random
 
-# Initialize Firebase
+# --- CONFIGURAÇÃO ---
+# Lista de casas de aposta para simulação
+BETTING_HOUSES = ['Betano', 'Bet365', 'Sportingbet', 'KTO', 'VaideBet', 'Esportes da Sorte']
+# API Gratuita para obter jogos reais (https://www.thesportsdb.com/api.php)
+SPORTS_API_URL = "https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d=" 
+
+# --- INICIALIZAÇÃO DO FIREBASE ---
 try:
     cred_json = json.loads(os.environ.get('FIREBASE_CREDENTIALS'))
     cred = credentials.Certificate(cred_json)
@@ -24,8 +24,9 @@ except Exception as e:
     print(f"Error initializing Firebase: {e}")
     exit()
 
+# --- FUNÇÕES AUXILIARES ---
 def clear_collection(collection_ref, batch_size=50):
-    """Deletes all documents in a collection in batches."""
+    """Apaga todos os documentos numa coleção em lotes."""
     docs = collection_ref.limit(batch_size).stream()
     deleted = 0
     for doc in docs:
@@ -33,190 +34,104 @@ def clear_collection(collection_ref, batch_size=50):
         deleted += 1
     if deleted >= batch_size:
         return clear_collection(collection_ref, batch_size)
-    print("Matches collection cleared.")
+    print("Coleção 'matches' limpa.")
 
-def setup_driver():
-    """Sets up the Selenium WebDriver."""
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-    return driver
+def generate_realistic_odds():
+    """Gera odds simuladas de forma realista."""
+    # Gera uma probabilidade base para cada resultado
+    prob_home = random.uniform(0.1, 0.7)
+    prob_draw = random.uniform(0.1, 0.4)
+    prob_away = 1.0 - prob_home - prob_draw
 
-def save_matches_to_firebase(matches):
-    """Saves a list of matches to Firebase and clears the old ones."""
-    if not matches:
-        print("No matches found to save.")
-        return False
-        
-    matches_ref = db.collection('matches')
-    clear_collection(matches_ref)
-    
-    for match_data in matches:
-        db.collection('matches').add(match_data)
-        print(f"Added to Firebase: {match_data.get('homeTeam')} vs {match_data.get('awayTeam')}")
-    
-    return True
+    # Garante que a probabilidade away não é negativa se as outras forem altas
+    if prob_away < 0.05:
+        prob_away = 0.05
+        total = prob_home + prob_draw + prob_away
+        prob_home /= total
+        prob_draw /= total
+        prob_away /= total
 
-def scrape_odds_agora(driver):
-    """Scraper for oddsagora.com.br"""
-    print("Attempting to scrape Odds Agora...")
-    URL = "https://www.oddsagora.com.br/futebol"
-    matches_found = []
+    # Converte probabilidades em odds com uma pequena margem para a casa
+    odd_home = 1 / prob_home * 0.95
+    odd_draw = 1 / prob_draw * 0.95
+    odd_away = 1 / prob_away * 0.95
     
-    driver.get(URL)
+    return {
+        "home": {"value": round(max(1.1, odd_home), 2), "house": random.choice(BETTING_HOUSES)},
+        "draw": {"value": round(max(2.0, odd_draw), 2), "house": random.choice(BETTING_HOUSES)},
+        "away": {"value": round(max(1.1, odd_away), 2), "house": random.choice(BETTING_HOUSES)}
+    }
+
+# --- FUNÇÃO PRINCIPAL DO ROBÔ ---
+def fetch_real_matches_and_simulate_odds():
+    """Busca jogos reais de uma API estável e simula as odds."""
+    
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    api_url_today = f"{SPORTS_API_URL}{today_str}"
+    
+    print(f"A buscar jogos para o dia de hoje a partir de: {api_url_today}")
     
     try:
-        cookie_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler')))
-        cookie_button.click()
-        print("Odds Agora: Cookie button clicked.")
-        time.sleep(5)
-    except Exception:
-        print("Odds Agora: Could not find or click cookie button.")
+        response = requests.get(api_url_today)
+        response.raise_for_status() # Verifica se houve erros no pedido
+        data = response.json()
+        
+        # A API retorna 'None' se não houver eventos, por isso tratamos isso
+        events = data.get('events')
+        if not events:
+            print("Nenhum evento encontrado para hoje nesta API.")
+            return
 
-    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.odd-event')))
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    event_cards = soup.select('div.odd-event')
-    print(f"Odds Agora: Found {len(event_cards)} event cards.")
+        print(f"Encontrados {len(events)} eventos.")
+        
+        matches_ref = db.collection('matches')
+        clear_collection(matches_ref)
 
-    for card in event_cards[:20]:
-        try:
-            league = card.select_one('div.odd-event__league span').text.strip()
-            home_team = card.select_one('.odd-event__home-team span.team-name').text.strip()
-            away_team = card.select_one('.odd-event__away-team span.team-name').text.strip()
-            time_str = card.select_one('.odd-event__date span').text.strip()
-            date_str = datetime.now().strftime("%Y-%m-%d")
+        for event in events:
+            # Filtra apenas por eventos de Futebol (Soccer)
+            if event.get('strSport') != 'Soccer':
+                continue
 
-            odds_elements = card.select('.odd-event__odds a')
-            if len(odds_elements) < 3: continue
+            try:
+                # Extrai os dados do jogo real
+                home_team = event.get('strHomeTeam')
+                away_team = event.get('strAwayTeam')
+                league = event.get('strLeague')
+                event_time_str = event.get('strTime')
+                event_date_str = event.get('dateEvent')
 
-            odds_data = {
-                "home": {"value": float(odds_elements[0].select_one('.odd-value').text.strip().replace(',', '.')), "house": odds_elements[0].select_one('.casa-de-aposta img')['alt'].strip()},
-                "draw": {"value": float(odds_elements[1].select_one('.odd-value').text.strip().replace(',', '.')), "house": odds_elements[1].select_one('.casa-de-aposta img')['alt'].strip()},
-                "away": {"value": float(odds_elements[2].select_one('.odd-value').text.strip().replace(',', '.')), "house": odds_elements[2].select_one('.casa-de-aposta img')['alt'].strip()}
-            }
+                # Validação básica para garantir que temos os dados mínimos
+                if not all([home_team, away_team, league, event_time_str, event_date_str]):
+                    continue
 
-            matches_found.append({
-                'homeTeam': home_team, 'awayTeam': away_team, 'league': league,
-                'date': date_str, 'time': time_str, 'odds': odds_data,
-                'potential': 'Médio', 'analysis': 'Análise automática com base nas odds recolhidas.'
-            })
-        except Exception:
-            continue
-            
-    return matches_found
+                # Gera as odds simuladas para este jogo real
+                simulated_odds = generate_realistic_odds()
+                
+                match_data = {
+                    'homeTeam': home_team,
+                    'awayTeam': away_team,
+                    'league': league,
+                    'date': event_date_str,
+                    'time': event_time_str[:5], # Pega apenas HH:MM
+                    'odds': simulated_odds,
+                    'potential': random.choice(['Médio', 'Alto']), # Potencial aleatório
+                    'analysis': 'Análise automática com base em dados de jogos reais e odds simuladas.'
+                }
+                
+                # Guarda na base de dados
+                db.collection('matches').add(match_data)
+                print(f"Adicionado à base de dados: {home_team} vs {away_team}")
 
-def scrape_oddspedia(driver):
-    """Scraper for oddspedia.com"""
-    print("Attempting to scrape Oddspedia...")
-    URL = "https://oddspedia.com/br/futebol"
-    matches_found = []
-    
-    driver.get(URL)
-    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, '.event-holder')))
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    event_cards = soup.select('.event-holder')
-    print(f"Oddspedia: Found {len(event_cards)} event cards.")
+            except Exception as e:
+                print(f"Erro ao processar um evento: {e}")
+                continue
 
-    for card in event_cards[:20]:
-        try:
-            league = card.select_one('.league-info .league-name').text.strip()
-            teams = card.select('.team-name')
-            home_team = teams[0].text.strip()
-            away_team = teams[1].text.strip()
-            time_str = card.select_one('.game-time').text.strip()
-            date_str = datetime.now().strftime("%Y-%m-%d")
-
-            odds_elements = card.select('.odds-item a')
-            if len(odds_elements) < 3: continue
-
-            odds_data = {
-                "home": {"value": float(odds_elements[0].text.strip()), "house": "Oddspedia"},
-                "draw": {"value": float(odds_elements[1].text.strip()), "house": "Oddspedia"},
-                "away": {"value": float(odds_elements[2].text.strip()), "house": "Oddspedia"}
-            }
-
-            matches_found.append({
-                'homeTeam': home_team, 'awayTeam': away_team, 'league': league,
-                'date': date_str, 'time': time_str, 'odds': odds_data,
-                'potential': 'Médio', 'analysis': 'Análise automática com base nas odds recolhidas.'
-            })
-        except Exception:
-            continue
-            
-    return matches_found
-    
-def scrape_checkdaposta(driver):
-    """Scraper for checkdaposta.com"""
-    print("Attempting to scrape Check Da Posta...")
-    URL = "https://www.checkdaposta.com/"
-    matches_found = []
-    
-    driver.get(URL)
-    time.sleep(5) # This site needs a bit of time to load content
-    
-    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.card-event')))
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    event_cards = soup.select('div.card-event')
-    print(f"Check Da Posta: Found {len(event_cards)} event cards.")
-
-    for card in event_cards[:20]:
-        try:
-            league = card.select_one('.event-details-league-name').text.strip()
-            teams = card.select('.event-teams-team-name')
-            home_team = teams[0].text.strip()
-            away_team = teams[1].text.strip()
-            time_str = card.select_one('.event-time-clock').text.strip()
-            date_str = datetime.now().strftime("%Y-%m-%d")
-
-            odds_elements = card.select('.best-odd-odd')
-            if len(odds_elements) < 3: continue
-
-            odds_data = {
-                "home": {"value": float(odds_elements[0].text.strip().replace(',', '.')), "house": "Checkdaposta"},
-                "draw": {"value": float(odds_elements[1].text.strip().replace(',', '.')), "house": "Checkdaposta"},
-                "away": {"value": float(odds_elements[2].text.strip().replace(',', '.')), "house": "Checkdaposta"}
-            }
-
-            matches_found.append({
-                'homeTeam': home_team, 'awayTeam': away_team, 'league': league,
-                'date': date_str, 'time': time_str, 'odds': odds_data,
-                'potential': 'Médio', 'analysis': 'Análise automática com base nas odds recolhidas.'
-            })
-        except Exception:
-            continue
-            
-    return matches_found
+    except requests.exceptions.RequestException as e:
+        print(f"Falha na ligação à API de desporto: {e}")
+    except Exception as e:
+        print(f"Ocorreu um erro inesperado: {e}")
 
 if __name__ == "__main__":
-    driver = setup_driver()
-    
-    # List of scrapers to try in order
-    scrapers = [
-        scrape_odds_agora,
-        scrape_oddspedia,
-        scrape_checkdaposta
-    ]
-    
-    success = False
-    for scraper_func in scrapers:
-        try:
-            matches = scraper_func(driver)
-            if matches:
-                if save_matches_to_firebase(matches):
-                    print(f"Success! Scraped {len(matches)} matches from {scraper_func.__name__}.")
-                    success = True
-                    break # Exit the loop on first success
-        except Exception as e:
-            print(f"Scraper {scraper_func.__name__} failed: {e}")
-            continue # Try the next scraper
-            
-    if not success:
-        print("All scrapers failed. No data was saved.")
-
-    driver.quit()
-    print("Driver closed.")
+    fetch_real_matches_and_simulate_odds()
+    print("Processo do robô concluído.")
 
