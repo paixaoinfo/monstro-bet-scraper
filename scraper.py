@@ -46,94 +46,137 @@ def setup_driver():
     driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
     return driver
 
-def scrape_odds():
+def save_matches_to_firebase(matches):
+    """Saves a list of matches to Firebase and clears the old ones."""
+    if not matches:
+        print("No matches found to save.")
+        return False
+        
+    matches_ref = db.collection('matches')
+    clear_collection(matches_ref)
+    
+    for match_data in matches:
+        db.collection('matches').add(match_data)
+        print(f"Added to Firebase: {match_data.get('homeTeam')} vs {match_data.get('awayTeam')}")
+    
+    return True
+
+def scrape_odds_agora(driver):
+    """Scraper for oddsagora.com.br"""
+    print("Attempting to scrape Odds Agora...")
     URL = "https://www.oddsagora.com.br/futebol"
-    driver = setup_driver()
+    matches_found = []
+    
+    driver.get(URL)
     
     try:
-        driver.get(URL)
-        print("Successfully fetched the webpage with Selenium.")
-
-        # Wait for the cookie button and click it
-        try:
-            cookie_button = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler'))
-            )
-            cookie_button.click()
-            print("Cookie button clicked.")
-            time.sleep(5) # Wait for the page to reload/settle
-        except Exception as e:
-            print(f"Could not find or click cookie button: {e}")
-            # Continue anyway, it might not be present
-
-        # Wait for the main content to be present
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.odd-event'))
+        cookie_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler'))
         )
-        
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, 'html.parser')
-        
-        matches_ref = db.collection('matches')
-        clear_collection(matches_ref)
+        cookie_button.click()
+        print("Odds Agora: Cookie button clicked.")
+        time.sleep(5)
+    except Exception:
+        print("Odds Agora: Could not find or click cookie button.")
 
-        event_cards = soup.select('div.odd-event')
-        print(f"Found {len(event_cards)} event cards.")
+    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.odd-event')))
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    event_cards = soup.select('div.odd-event')
+    print(f"Odds Agora: Found {len(event_cards)} event cards.")
 
-        if not event_cards:
-            print("No event cards found after waiting.")
-            return
+    for card in event_cards[:20]:
+        try:
+            league = card.select_one('div.odd-event__league span').text.strip()
+            home_team = card.select_one('.odd-event__home-team span.team-name').text.strip()
+            away_team = card.select_one('.odd-event__away-team span.team-name').text.strip()
+            time_str = card.select_one('.odd-event__date span').text.strip()
+            date_str = datetime.now().strftime("%Y-%m-%d")
 
-        for card in event_cards[:20]:
-            try:
-                league = card.select_one('div.odd-event__league span').text.strip()
-                home_team = card.select_one('.odd-event__home-team span.team-name').text.strip()
-                away_team = card.select_one('.odd-event__away-team span.team-name').text.strip()
-                time_str = card.select_one('.odd-event__date span').text.strip()
-                date_str = datetime.now().strftime("%Y-%m-%d")
+            odds_elements = card.select('.odd-event__odds a')
+            if len(odds_elements) < 3: continue
 
-                odds_elements = card.select('.odd-event__odds a')
-                if len(odds_elements) < 3:
-                    continue
+            odds_data = {
+                "home": {"value": float(odds_elements[0].select_one('.odd-value').text.strip().replace(',', '.')), "house": odds_elements[0].select_one('.casa-de-aposta img')['alt'].strip()},
+                "draw": {"value": float(odds_elements[1].select_one('.odd-value').text.strip().replace(',', '.')), "house": odds_elements[1].select_one('.casa-de-aposta img')['alt'].strip()},
+                "away": {"value": float(odds_elements[2].select_one('.odd-value').text.strip().replace(',', '.')), "house": odds_elements[2].select_one('.casa-de-aposta img')['alt'].strip()}
+            }
 
-                odds_home_val = float(odds_elements[0].select_one('.odd-value').text.strip().replace(',', '.'))
-                odds_draw_val = float(odds_elements[1].select_one('.odd-value').text.strip().replace(',', '.'))
-                odds_away_val = float(odds_elements[2].select_one('.odd-value').text.strip().replace(',', '.'))
+            matches_found.append({
+                'homeTeam': home_team, 'awayTeam': away_team, 'league': league,
+                'date': date_str, 'time': time_str, 'odds': odds_data,
+                'potential': 'Médio', 'analysis': 'Análise automática com base nas odds recolhidas.'
+            })
+        except Exception:
+            continue
+            
+    return matches_found
 
-                house_home = odds_elements[0].select_one('.casa-de-aposta img')['alt'].strip()
-                house_draw = odds_elements[1].select_one('.casa-de-aposta img')['alt'].strip()
-                house_away = odds_elements[2].select_one('.casa-de-aposta img')['alt'].strip()
+def scrape_oddspedia(driver):
+    """Scraper for oddspedia.com"""
+    print("Attempting to scrape Oddspedia...")
+    URL = "https://oddspedia.com/br/futebol"
+    matches_found = []
+    
+    driver.get(URL)
+    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, '.event-holder')))
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    event_cards = soup.select('.event-holder')
+    print(f"Oddspedia: Found {len(event_cards)} event cards.")
 
-                odds_data = {
-                    "home": {"value": odds_home_val, "house": house_home},
-                    "draw": {"value": odds_draw_val, "house": house_draw},
-                    "away": {"value": odds_away_val, "house": house_away}
-                }
+    for card in event_cards[:20]:
+        try:
+            league = card.select_one('.league-info .league-name').text.strip()
+            teams = card.select('.team-name')
+            home_team = teams[0].text.strip()
+            away_team = teams[1].text.strip()
+            time_str = card.select_one('.game-time').text.strip()
+            date_str = datetime.now().strftime("%Y-%m-%d")
 
-                match_data = {
-                    'homeTeam': home_team,
-                    'awayTeam': away_team,
-                    'league': league,
-                    'date': date_str,
-                    'time': time_str,
-                    'odds': odds_data,
-                    'potential': 'Médio',
-                    'analysis': 'Análise automática com base nas odds recolhidas.'
-                }
-                
-                db.collection('matches').add(match_data)
-                print(f"Added to Firebase: {home_team} vs {away_team}")
+            odds_elements = card.select('.odds-item a')
+            if len(odds_elements) < 3: continue
 
-            except Exception as e:
-                print(f"Error processing a single match card: {e}")
-                continue
+            odds_data = {
+                "home": {"value": float(odds_elements[0].text.strip()), "house": "Oddspedia"},
+                "draw": {"value": float(odds_elements[1].text.strip()), "house": "Oddspedia"},
+                "away": {"value": float(odds_elements[2].text.strip()), "house": "Oddspedia"}
+            }
 
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-    finally:
-        driver.quit()
-        print("Driver closed.")
+            matches_found.append({
+                'homeTeam': home_team, 'awayTeam': away_team, 'league': league,
+                'date': date_str, 'time': time_str, 'odds': odds_data,
+                'potential': 'Médio', 'analysis': 'Análise automática com base nas odds recolhidas.'
+            })
+        except Exception:
+            continue
+            
+    return matches_found
 
 if __name__ == "__main__":
-    scrape_odds()
+    driver = setup_driver()
+    
+    # List of scrapers to try in order
+    scrapers = [
+        scrape_odds_agora,
+        scrape_oddspedia
+        # We can add more scraper functions here in the future
+    ]
+    
+    success = False
+    for scraper_func in scrapers:
+        try:
+            matches = scraper_func(driver)
+            if matches:
+                if save_matches_to_firebase(matches):
+                    print(f"Success! Scraped {len(matches)} matches from {scraper_func.__name__}.")
+                    success = True
+                    break # Exit the loop on first success
+        except Exception as e:
+            print(f"Scraper {scraper_func.__name__} failed: {e}")
+            continue # Try the next scraper
+            
+    if not success:
+        print("All scrapers failed. No data was saved.")
+
+    driver.quit()
+    print("Driver closed.")
 
