@@ -8,12 +8,18 @@ import requests
 
 # --- CONFIGURAÇÃO ---
 ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
-# Ligas que queremos buscar (Europa e Brasil)
-LEAGUES = 'soccer_epl,soccer_uefa_champions_league,soccer_brazil_campeonato_brasileiro_serie_a'
-API_URL = f"https://api.the-odds-api.com/v4/sports/{LEAGUES}/odds/?regions=br&markets=h2h&apiKey={ODDS_API_KEY}"
+# AGORA VAMOS BUSCAR TODOS OS JOGOS DE FUTEBOL E FILTRAR DEPOIS
+API_URL = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?regions=br&markets=h2h&apiKey={ODDS_API_KEY}"
+
+# LIGAS QUE QUEREMOS MANTER
+DESIRED_LEAGUES = [
+    'soccer_epl', # Premier League
+    'soccer_uefa_champions_league', # Champions League
+    'soccer_brazil_campeonato_brasileiro_serie_a' # Brasileirão
+]
 
 ANALYSIS_TEMPLATES = {
-    "classic": ["Clássico de grande rivalidade. A tensão pode levar a um cenário imprevisível e com potencial para viradas.", "Jogo onde a camisa pesa. A tradição fala mais alto и o fator emocional será decisivo."],
+    "classic": ["Clássico de grande rivalidade. A tensão pode levar a um cenário imprevisível e com potencial para viradas.", "Jogo onde a camisa pesa. A tradição fala mais alto e o fator emocional será decisivo."],
     "technical": ["Duelo de duas equipas muito organizadas taticamente. A que errar menos provavelmente sairá com a vitória.", "Partida que promete ser um xadrez tático. A estratégia dos treinadores será fundamental."],
     "balanced": ["Confronto muito equilibrado. O fator casa pode ser o diferencial para o resultado final.", "Partida sem um favorito claro. Detalhes podem definir o vencedor."]
 }
@@ -56,18 +62,21 @@ def fetch_real_odds():
             print("Nenhum jogo encontrado na resposta da API.")
             return
 
-        print(f"Encontrados {len(games)} jogos.")
+        print(f"Encontrados {len(games)} jogos na API. A filtrar pelas ligas desejadas...")
         
         matches_ref = db.collection('matches')
         clear_collection(matches_ref)
 
         for game in games:
+            # FILTRA APENAS OS JOGOS DAS LIGAS QUE QUEREMOS
+            if game.get('sport_key') not in DESIRED_LEAGUES:
+                continue
+
             try:
                 home_team = game.get('home_team')
                 away_team = game.get('away_team')
                 commence_time = game.get('commence_time')
                 
-                # Converte a data/hora para o formato correto
                 dt_object = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
                 game_date = dt_object.strftime("%Y-%m-%d")
                 game_time = dt_object.strftime("%H:%M")
@@ -86,7 +95,6 @@ def fetch_real_odds():
                             elif outcome['name'] == away_team and price > best_odds['away']['value']:
                                 best_odds['away'] = {'value': price, 'house': bookmaker['title']}
                 
-                # Se não encontrarmos odds válidas, pulamos o jogo
                 if best_odds['home']['value'] == 0:
                     continue
 
