@@ -4,31 +4,13 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta
 import random
+import requests
 
 # --- CONFIGURAÇÃO ---
 BETTING_HOUSES = ['Betano', 'Bet365', 'Sportingbet', 'KTO', 'VaideBet', 'Esportes da Sorte']
+SPORTS_API_URL = "https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d="
 
-# Lista interna de jogos futuros, agora mais precisa e variada.
-INTERNAL_MATCH_LIST = [
-    {"league": "Liga dos Campeões", "homeTeam": "Real Madrid", "awayTeam": "Bayern Munique", "type": "classic"},
-    {"league": "Liga dos Campeões", "homeTeam": "Manchester City", "awayTeam": "PSG", "type": "technical"},
-    {"league": "Premier League", "homeTeam": "Liverpool", "awayTeam": "Manchester United", "type": "classic"},
-    {"league": "Premier League", "homeTeam": "Arsenal", "awayTeam": "Chelsea", "type": "classic"},
-    {"league": "La Liga", "homeTeam": "Barcelona", "awayTeam": "Atlético de Madrid", "type": "technical"},
-    {"league": "Brasileirão Série A", "homeTeam": "Flamengo", "awayTeam": "Palmeiras", "type": "classic"},
-    {"league": "Brasileirão Série A", "homeTeam": "Corinthians", "awayTeam": "São Paulo", "type": "classic"},
-    {"league": "Brasileirão Série A", "homeTeam": "Santos", "awayTeam": "Vasco da Gama", "type": "balanced"},
-    {"league": "Copa Libertadores", "homeTeam": "River Plate", "awayTeam": "Boca Juniors", "type": "classic"},
-    {"league": "Copa Libertadores", "homeTeam": "Fluminense", "awayTeam": "Internacional", "type": "technical"},
-    {"league": "Serie A (Itália)", "homeTeam": "Inter de Milão", "awayTeam": "Juventus", "type": "classic"},
-    {"league": "Bundesliga", "homeTeam": "Borussia Dortmund", "awayTeam": "RB Leipzig", "type": "goals"},
-    {"league": "Liga Portugal", "homeTeam": "Benfica", "awayTeam": "FC Porto", "type": "classic"},
-    {"league": "Brasileirão Série A", "homeTeam": "Grêmio", "awayTeam": "Atlético-MG", "type": "balanced"},
-    {"league": "Eliminatórias Copa do Mundo", "homeTeam": "Brasil", "awayTeam": "Argentina", "type": "classic"},
-    {"league": "Eliminatórias Copa do Mundo", "homeTeam": "Portugal", "awayTeam": "Itália", "type": "technical"},
-]
-
-# Nova lista de análises de cenário
+# Lista de análises de cenário
 ANALYSIS_TEMPLATES = {
     "classic": [
         "Clássico de grande rivalidade. A tensão do jogo pode levar a um cenário imprevisível e com potencial para viradas.",
@@ -52,6 +34,10 @@ ANALYSIS_TEMPLATES = {
     ]
 }
 
+# Palavras-chave para identificar tipos de jogos
+CLASSIC_TEAMS = ["Real Madrid", "Barcelona", "Liverpool", "Manchester United", "Flamengo", "Palmeiras", "Corinthians", "São Paulo", "River Plate", "Boca Juniors", "Benfica", "FC Porto", "Brasil", "Argentina"]
+TECHNICAL_LEAGUES = ["Champions League", "Premier League", "La Liga", "Serie A"]
+
 # --- INICIALIZAÇÃO DO FIREBASE ---
 try:
     cred_json = json.loads(os.environ.get('FIREBASE_CREDENTIALS'))
@@ -66,14 +52,12 @@ except Exception as e:
 
 # --- FUNÇÕES AUXILIARES ---
 def clear_collection(collection_ref):
-    """Apaga todos os documentos numa coleção."""
     docs = collection_ref.stream()
     for doc in docs:
         doc.reference.delete()
     print("Coleção 'matches' limpa.")
 
 def generate_realistic_odds():
-    """Gera odds simuladas de forma realista."""
     prob_home = random.uniform(0.15, 0.65)
     prob_draw = random.uniform(0.20, 0.35)
     prob_away = 1.0 - prob_home - prob_draw
@@ -83,7 +67,7 @@ def generate_realistic_odds():
         total = prob_home + prob_draw + prob_away
         prob_home, prob_draw, prob_away = prob_home/total, prob_draw/total, prob_away/total
 
-    margin = 0.95 # Margem de 5% da casa
+    margin = 0.95
     odd_home = 1 / prob_home * margin
     odd_draw = 1 / prob_draw * margin
     odd_away = 1 / prob_away * margin
@@ -94,35 +78,71 @@ def generate_realistic_odds():
         "away": {"value": round(max(1.2, odd_away), 2), "house": random.choice(BETTING_HOUSES)}
     }
 
+def generate_smart_analysis(home_team, away_team, league):
+    """Gera uma análise inteligente com base nas equipas e na liga."""
+    if any(team in home_team for team in CLASSIC_TEAMS) and any(team in away_team for team in CLASSIC_TEAMS):
+        return random.choice(ANALYSIS_TEMPLATES["classic"])
+    if any(l in league for l in TECHNICAL_LEAGUES):
+        return random.choice(ANALYSIS_TEMPLATES["technical"])
+    if "Bundesliga" in league:
+        return random.choice(ANALYSIS_TEMPLATES["goals"])
+    return random.choice(ANALYSIS_TEMPLATES["balanced"])
+
+
 # --- FUNÇÃO PRINCIPAL DO ROBÔ ---
-def process_internal_matches():
-    """Processa a lista interna de jogos, gera odds e guarda na base de dados."""
+def fetch_real_matches_and_simulate_odds():
+    print("A iniciar o processo para buscar jogos reais e simular odds.")
     
-    print("A iniciar o processo com a lista de jogos interna.")
+    all_events = []
+    # Busca jogos para os próximos 5 dias
+    for i in range(5):
+        date_to_fetch = datetime.now() + timedelta(days=i)
+        date_str = date_to_fetch.strftime("%Y-%m-%d")
+        api_url = f"{SPORTS_API_URL}{date_str}"
+        
+        print(f"A buscar jogos para o dia: {date_str}")
+        try:
+            response = requests.get(api_url)
+            response.raise_for_status()
+            data = response.json()
+            events = data.get('events')
+            if events:
+                all_events.extend(events)
+        except requests.exceptions.RequestException as e:
+            print(f"Falha na ligação à API para o dia {date_str}: {e}")
+            continue
+
+    if not all_events:
+        print("Nenhum evento encontrado nos próximos dias. A terminar.")
+        return
+
+    print(f"Total de {len(all_events)} eventos encontrados.")
+    
     matches_ref = db.collection('matches')
     clear_collection(matches_ref)
 
-    num_matches_to_show = random.randint(7, 12)
-    selected_matches = random.sample(INTERNAL_MATCH_LIST, num_matches_to_show)
-    
-    print(f"A processar {len(selected_matches)} jogos selecionados.")
+    for event in all_events:
+        if event.get('strSport') != 'Soccer':
+            continue
 
-    for i, match_template in enumerate(selected_matches):
         try:
-            future_date = datetime.now() + timedelta(days=i)
-            match_hour = random.randint(16, 22)
-            match_minute = random.choice([0, 15, 30, 45])
-            
-            # Escolhe uma análise aleatória com base no tipo de jogo
-            match_type = match_template.get("type", "balanced")
-            analysis_text = random.choice(ANALYSIS_TEMPLATES[match_type])
+            home_team = event.get('strHomeTeam')
+            away_team = event.get('strAwayTeam')
+            league = event.get('strLeague')
+            event_time_str = event.get('strTime')
+            event_date_str = event.get('dateEvent')
+
+            if not all([home_team, away_team, league, event_time_str, event_date_str]):
+                continue
+
+            analysis_text = generate_smart_analysis(home_team, away_team, league)
 
             match_data = {
-                'homeTeam': match_template['homeTeam'],
-                'awayTeam': match_template['awayTeam'],
-                'league': match_template['league'],
-                'date': future_date.strftime("%Y-%m-%d"),
-                'time': f"{match_hour:02d}:{match_minute:02d}",
+                'homeTeam': home_team,
+                'awayTeam': away_team,
+                'league': league,
+                'date': event_date_str,
+                'time': event_time_str[:5],
                 'odds': generate_realistic_odds(),
                 'potential': random.choice(['Médio', 'Alto']),
                 'analysis': analysis_text
@@ -132,12 +152,11 @@ def process_internal_matches():
             print(f"Adicionado à base de dados: {match_data['homeTeam']} vs {match_data['awayTeam']}")
 
         except Exception as e:
-            print(f"Erro ao processar o jogo {match_template['homeTeam']}: {e}")
+            print(f"Erro ao processar o evento {event.get('strEvent')}: {e}")
             continue
     
-    print(f"Processo concluído. {len(selected_matches)} jogos foram adicionados à base de dados.")
-
+    print("Processo do robô concluído.")
 
 if __name__ == "__main__":
-    process_internal_matches()
+    fetch_real_matches_and_simulate_odds()
 
