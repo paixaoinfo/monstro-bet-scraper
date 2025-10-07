@@ -1,10 +1,16 @@
 import os
 import json
-import requests
-from bs4 import BeautifulSoup
+import time
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
 
 # Initialize Firebase
 try:
@@ -29,49 +35,63 @@ def clear_collection(collection_ref, batch_size=50):
         return clear_collection(collection_ref, batch_size)
     print("Matches collection cleared.")
 
+def setup_driver():
+    """Sets up the Selenium WebDriver."""
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+    return driver
+
 def scrape_odds():
     URL = "https://www.oddsagora.com.br/futebol"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-    }
+    driver = setup_driver()
     
     try:
-        page = requests.get(URL, headers=headers)
-        page.raise_for_status() # Check for request errors
-        soup = BeautifulSoup(page.content, 'html.parser')
-        print("Successfully fetched the webpage.")
+        driver.get(URL)
+        print("Successfully fetched the webpage with Selenium.")
 
-        # Clear existing matches in Firebase to avoid duplicates
+        # Wait for the cookie button and click it
+        try:
+            cookie_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler'))
+            )
+            cookie_button.click()
+            print("Cookie button clicked.")
+            time.sleep(5) # Wait for the page to reload/settle
+        except Exception as e:
+            print(f"Could not find or click cookie button: {e}")
+            # Continue anyway, it might not be present
+
+        # Wait for the main content to be present
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.odd-event'))
+        )
+        
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
         matches_ref = db.collection('matches')
         clear_collection(matches_ref)
 
-        # UPDATED SELECTOR based on recent site analysis
         event_cards = soup.select('div.odd-event')
         print(f"Found {len(event_cards)} event cards.")
 
         if not event_cards:
-            print("No event cards found. The website structure might have changed.")
+            print("No event cards found after waiting.")
             return
 
-        for card in event_cards[:20]: # Limit to 20 matches
+        for card in event_cards[:20]:
             try:
-                league_element = card.select_one('div.odd-event__league span')
-                home_team_element = card.select_one('.odd-event__home-team span.team-name')
-                away_team_element = card.select_one('.odd-event__away-team span.team-name')
-                time_element = card.select_one('.odd-event__date span')
-                
-                if not all([league_element, home_team_element, away_team_element, time_element]):
-                    continue
-
-                league = league_element.text.strip()
-                home_team = home_team_element.text.strip()
-                away_team = away_team_element.text.strip()
-                time_str = time_element.text.strip()
-                
-                # Assume today's date if only time is present
+                league = card.select_one('div.odd-event__league span').text.strip()
+                home_team = card.select_one('.odd-event__home-team span.team-name').text.strip()
+                away_team = card.select_one('.odd-event__away-team span.team-name').text.strip()
+                time_str = card.select_one('.odd-event__date span').text.strip()
                 date_str = datetime.now().strftime("%Y-%m-%d")
 
-                # Find odds and houses
                 odds_elements = card.select('.odd-event__odds a')
                 if len(odds_elements) < 3:
                     continue
@@ -108,10 +128,11 @@ def scrape_odds():
                 print(f"Error processing a single match card: {e}")
                 continue
 
-    except requests.exceptions.RequestException as e:
-        print(f"HTTP Request failed: {e}")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
+    finally:
+        driver.quit()
+        print("Driver closed.")
 
 if __name__ == "__main__":
     scrape_odds()
