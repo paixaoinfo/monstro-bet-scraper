@@ -1,7 +1,9 @@
 name: Odds Scraper
 
 on:
-  workflow_dispatch: # Apenas execução manual
+  workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *' # Executa no início de cada hora
 
 jobs:
   scrape:
@@ -23,5 +25,6 @@ jobs:
       - name: Run Scraper
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python scraper.py
 
