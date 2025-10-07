@@ -45,8 +45,7 @@ def scrape_odds():
         matches_ref = db.collection('matches')
         clear_collection(matches_ref)
 
-        # The structure of the site seems to be a list of events.
-        # This selector is more specific and based on recent analysis.
+        # UPDATED SELECTOR based on recent site analysis
         event_cards = soup.select('div.odd-event')
         print(f"Found {len(event_cards)} event cards.")
 
@@ -56,11 +55,18 @@ def scrape_odds():
 
         for card in event_cards[:20]: # Limit to 20 matches
             try:
-                league = card.select_one('div.odd-event__league span').text.strip()
-                home_team = card.select_one('.odd-event__home-team span.team-name').text.strip()
-                away_team = card.select_one('.odd-event__away-team span.team-name').text.strip()
+                league_element = card.select_one('div.odd-event__league span')
+                home_team_element = card.select_one('.odd-event__home-team span.team-name')
+                away_team_element = card.select_one('.odd-event__away-team span.team-name')
+                time_element = card.select_one('.odd-event__date span')
                 
-                time_str = card.select_one('.odd-event__date span').text.strip()
+                if not all([league_element, home_team_element, away_team_element, time_element]):
+                    continue
+
+                league = league_element.text.strip()
+                home_team = home_team_element.text.strip()
+                away_team = away_team_element.text.strip()
+                time_str = time_element.text.strip()
                 
                 # Assume today's date if only time is present
                 date_str = datetime.now().strftime("%Y-%m-%d")
@@ -70,9 +76,9 @@ def scrape_odds():
                 if len(odds_elements) < 3:
                     continue
 
-                odds_home_val = float(odds_elements[0].select_one('.odd-value').text.strip())
-                odds_draw_val = float(odds_elements[1].select_one('.odd-value').text.strip())
-                odds_away_val = float(odds_elements[2].select_one('.odd-value').text.strip())
+                odds_home_val = float(odds_elements[0].select_one('.odd-value').text.strip().replace(',', '.'))
+                odds_draw_val = float(odds_elements[1].select_one('.odd-value').text.strip().replace(',', '.'))
+                odds_away_val = float(odds_elements[2].select_one('.odd-value').text.strip().replace(',', '.'))
 
                 house_home = odds_elements[0].select_one('.casa-de-aposta img')['alt'].strip()
                 house_draw = odds_elements[1].select_one('.casa-de-aposta img')['alt'].strip()
