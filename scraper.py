@@ -70,9 +70,7 @@ def scrape_odds_agora(driver):
     driver.get(URL)
     
     try:
-        cookie_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler'))
-        )
+        cookie_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, 'onetrust-accept-btn-handler')))
         cookie_button.click()
         print("Odds Agora: Cookie button clicked.")
         time.sleep(5)
@@ -150,6 +148,48 @@ def scrape_oddspedia(driver):
             continue
             
     return matches_found
+    
+def scrape_checkdaposta(driver):
+    """Scraper for checkdaposta.com"""
+    print("Attempting to scrape Check Da Posta...")
+    URL = "https://www.checkdaposta.com/"
+    matches_found = []
+    
+    driver.get(URL)
+    time.sleep(5) # This site needs a bit of time to load content
+    
+    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.card-event')))
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    event_cards = soup.select('div.card-event')
+    print(f"Check Da Posta: Found {len(event_cards)} event cards.")
+
+    for card in event_cards[:20]:
+        try:
+            league = card.select_one('.event-details-league-name').text.strip()
+            teams = card.select('.event-teams-team-name')
+            home_team = teams[0].text.strip()
+            away_team = teams[1].text.strip()
+            time_str = card.select_one('.event-time-clock').text.strip()
+            date_str = datetime.now().strftime("%Y-%m-%d")
+
+            odds_elements = card.select('.best-odd-odd')
+            if len(odds_elements) < 3: continue
+
+            odds_data = {
+                "home": {"value": float(odds_elements[0].text.strip().replace(',', '.')), "house": "Checkdaposta"},
+                "draw": {"value": float(odds_elements[1].text.strip().replace(',', '.')), "house": "Checkdaposta"},
+                "away": {"value": float(odds_elements[2].text.strip().replace(',', '.')), "house": "Checkdaposta"}
+            }
+
+            matches_found.append({
+                'homeTeam': home_team, 'awayTeam': away_team, 'league': league,
+                'date': date_str, 'time': time_str, 'odds': odds_data,
+                'potential': 'Médio', 'analysis': 'Análise automática com base nas odds recolhidas.'
+            })
+        except Exception:
+            continue
+            
+    return matches_found
 
 if __name__ == "__main__":
     driver = setup_driver()
@@ -157,8 +197,8 @@ if __name__ == "__main__":
     # List of scrapers to try in order
     scrapers = [
         scrape_odds_agora,
-        scrape_oddspedia
-        # We can add more scraper functions here in the future
+        scrape_oddspedia,
+        scrape_checkdaposta
     ]
     
     success = False
