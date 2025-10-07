@@ -201,21 +201,29 @@ if __name__ == "__main__":
         scrape_checkdaposta
     ]
     
-    success = False
+    all_matches = []
+    processed_matches = set()
+
     for scraper_func in scrapers:
         try:
-            matches = scraper_func(driver)
-            if matches:
-                if save_matches_to_firebase(matches):
-                    print(f"Success! Scraped {len(matches)} matches from {scraper_func.__name__}.")
-                    success = True
-                    break # Exit the loop on first success
+            matches_from_scraper = scraper_func(driver)
+            if matches_from_scraper:
+                for match in matches_from_scraper:
+                    # Create a unique identifier to avoid duplicates
+                    identifier = f"{match['homeTeam'].lower()}-{match['awayTeam'].lower()}"
+                    if identifier not in processed_matches:
+                        all_matches.append(match)
+                        processed_matches.add(identifier)
+                print(f"Collected {len(matches_from_scraper)} matches from {scraper_func.__name__}.")
         except Exception as e:
-            print(f"Scraper {scraper_func.__name__} failed: {e}")
-            continue # Try the next scraper
+            print(f"Scraper {scraper_func.__name__} failed entirely: {e}")
+            continue
             
-    if not success:
-        print("All scrapers failed. No data was saved.")
+    if all_matches:
+        save_matches_to_firebase(all_matches)
+        print(f"Total unique matches saved to Firebase: {len(all_matches)}")
+    else:
+        print("All scrapers failed or found no matches. No data was saved.")
 
     driver.quit()
     print("Driver closed.")
