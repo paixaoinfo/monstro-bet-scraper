@@ -55,7 +55,12 @@ def fetch_real_odds():
     
     try:
         response = requests.get(API_URL)
-        response.raise_for_status()
+        # Não usamos raise_for_status() para tratar o 422 manualmente
+        if response.status_code == 422:
+            print("API retornou 422: Nenhuma odd disponível para os desportos/regiões solicitados no momento.")
+            return # Termina a execução de forma limpa
+        
+        response.raise_for_status() # Levanta erro para outros códigos (401, 404, 500, etc.)
         games = response.json()
         
         if not games:
@@ -67,6 +72,7 @@ def fetch_real_odds():
         matches_ref = db.collection('matches')
         clear_collection(matches_ref)
 
+        games_to_add = 0
         for game in games:
             # FILTRA APENAS OS JOGOS DAS LIGAS QUE QUEREMOS
             if game.get('sport_key') not in DESIRED_LEAGUES:
@@ -112,11 +118,15 @@ def fetch_real_odds():
                 }
                 
                 db.collection('matches').add(match_data)
+                games_to_add += 1
                 print(f"Adicionado à base de dados: {home_team} vs {away_team}")
 
             except Exception as e:
                 print(f"Erro ao processar um jogo: {e}")
                 continue
+        
+        if games_to_add == 0:
+            print("Nenhum jogo das ligas desejadas foi encontrado na resposta da API.")
 
     except requests.exceptions.RequestException as e:
         print(f"Falha na ligação à Odds API: {e}")
