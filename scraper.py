@@ -8,24 +8,49 @@ import random
 # --- CONFIGURAÇÃO ---
 BETTING_HOUSES = ['Betano', 'Bet365', 'Sportingbet', 'KTO', 'VaideBet', 'Esportes da Sorte']
 
-# Lista interna de jogos futuros realistas. O robô irá escolher a partir daqui.
+# Lista interna de jogos futuros, agora mais precisa e variada.
 INTERNAL_MATCH_LIST = [
-    {"league": "Liga dos Campeões", "homeTeam": "Real Madrid", "awayTeam": "Bayern Munique"},
-    {"league": "Liga dos Campeões", "homeTeam": "Manchester City", "awayTeam": "PSG"},
-    {"league": "Premier League", "homeTeam": "Liverpool", "awayTeam": "Manchester United"},
-    {"league": "Premier League", "homeTeam": "Arsenal", "awayTeam": "Chelsea"},
-    {"league": "La Liga", "homeTeam": "Barcelona", "awayTeam": "Atlético de Madrid"},
-    {"league": "Brasileirão Série A", "homeTeam": "Flamengo", "awayTeam": "Palmeiras"},
-    {"league": "Brasileirão Série A", "homeTeam": "Corinthians", "awayTeam": "São Paulo"},
-    {"league": "Copa Libertadores", "homeTeam": "River Plate", "awayTeam": "Boca Juniors"},
-    {"league": "Copa Libertadores", "homeTeam": "Fluminense", "awayTeam": "Internacional"},
-    {"league": "Serie A (Itália)", "homeTeam": "Inter de Milão", "awayTeam": "Juventus"},
-    {"league": "Bundesliga", "homeTeam": "Borussia Dortmund", "awayTeam": "RB Leipzig"},
-    {"league": "Liga Portugal", "homeTeam": "Benfica", "awayTeam": "FC Porto"},
-    {"league": "Brasileirão Série B", "homeTeam": "Santos", "awayTeam": "Vasco da Gama"},
-    {"league": "Eliminatórias Copa do Mundo", "homeTeam": "Brasil", "awayTeam": "Argentina"},
-    {"league": "Eliminatórias Copa do Mundo", "homeTeam": "Portugal", "awayTeam": "Itália"},
+    {"league": "Liga dos Campeões", "homeTeam": "Real Madrid", "awayTeam": "Bayern Munique", "type": "classic"},
+    {"league": "Liga dos Campeões", "homeTeam": "Manchester City", "awayTeam": "PSG", "type": "technical"},
+    {"league": "Premier League", "homeTeam": "Liverpool", "awayTeam": "Manchester United", "type": "classic"},
+    {"league": "Premier League", "homeTeam": "Arsenal", "awayTeam": "Chelsea", "type": "classic"},
+    {"league": "La Liga", "homeTeam": "Barcelona", "awayTeam": "Atlético de Madrid", "type": "technical"},
+    {"league": "Brasileirão Série A", "homeTeam": "Flamengo", "awayTeam": "Palmeiras", "type": "classic"},
+    {"league": "Brasileirão Série A", "homeTeam": "Corinthians", "awayTeam": "São Paulo", "type": "classic"},
+    {"league": "Brasileirão Série A", "homeTeam": "Santos", "awayTeam": "Vasco da Gama", "type": "balanced"},
+    {"league": "Copa Libertadores", "homeTeam": "River Plate", "awayTeam": "Boca Juniors", "type": "classic"},
+    {"league": "Copa Libertadores", "homeTeam": "Fluminense", "awayTeam": "Internacional", "type": "technical"},
+    {"league": "Serie A (Itália)", "homeTeam": "Inter de Milão", "awayTeam": "Juventus", "type": "classic"},
+    {"league": "Bundesliga", "homeTeam": "Borussia Dortmund", "awayTeam": "RB Leipzig", "type": "goals"},
+    {"league": "Liga Portugal", "homeTeam": "Benfica", "awayTeam": "FC Porto", "type": "classic"},
+    {"league": "Brasileirão Série A", "homeTeam": "Grêmio", "awayTeam": "Atlético-MG", "type": "balanced"},
+    {"league": "Eliminatórias Copa do Mundo", "homeTeam": "Brasil", "awayTeam": "Argentina", "type": "classic"},
+    {"league": "Eliminatórias Copa do Mundo", "homeTeam": "Portugal", "awayTeam": "Itália", "type": "technical"},
 ]
+
+# Nova lista de análises de cenário
+ANALYSIS_TEMPLATES = {
+    "classic": [
+        "Clássico de grande rivalidade. A tensão do jogo pode levar a um cenário imprevisível e com potencial para viradas.",
+        "Jogo onde a camisa pesa. A tradição das equipas fala mais alto e o fator emocional será decisivo.",
+        "Confronto histórico. Espera-se um jogo muito disputado, onde um golo pode mudar toda a dinâmica da partida."
+    ],
+    "technical": [
+        "Duelo de duas equipas muito organizadas taticamente. A que errar menos provavelmente sairá com a vitória.",
+        "Partida que promete ser um xadrez tático. A estratégia dos treinadores será fundamental para o resultado.",
+        "Confronto entre equipas de alta qualidade técnica. O brilho individual de um jogador pode decidir o jogo."
+    ],
+    "goals": [
+        "Jogo com potencial para muitos golos. Ambas as equipas têm ataques poderosos e defesas que costumam ceder espaços.",
+        "A tendência é de uma partida aberta. As duas equipas preferem atacar a defender, o que promete um placar movimentado.",
+        "Esperam-se golos dos dois lados. É um confronto entre duas filosofias de jogo ofensivas."
+    ],
+    "balanced": [
+        "Confronto muito equilibrado. O fator casa pode ser o diferencial para o resultado final.",
+        "Partida sem um favorito claro. Detalhes como uma bola parada ou um erro individual podem definir o vencedor.",
+        "Jogo de forças equivalentes. A equipa que conseguir impor o seu ritmo de jogo terá mais chances de vencer."
+    ]
+}
 
 # --- INICIALIZAÇÃO DO FIREBASE ---
 try:
@@ -77,18 +102,20 @@ def process_internal_matches():
     matches_ref = db.collection('matches')
     clear_collection(matches_ref)
 
-    # Escolhe um número aleatório de jogos da lista para mostrar (entre 5 e 10)
-    num_matches_to_show = random.randint(5, 10)
+    num_matches_to_show = random.randint(7, 12)
     selected_matches = random.sample(INTERNAL_MATCH_LIST, num_matches_to_show)
     
     print(f"A processar {len(selected_matches)} jogos selecionados.")
 
     for i, match_template in enumerate(selected_matches):
         try:
-            # Adiciona uma data e hora futuras realistas
             future_date = datetime.now() + timedelta(days=i)
             match_hour = random.randint(16, 22)
             match_minute = random.choice([0, 15, 30, 45])
+            
+            # Escolhe uma análise aleatória com base no tipo de jogo
+            match_type = match_template.get("type", "balanced")
+            analysis_text = random.choice(ANALYSIS_TEMPLATES[match_type])
 
             match_data = {
                 'homeTeam': match_template['homeTeam'],
@@ -98,7 +125,7 @@ def process_internal_matches():
                 'time': f"{match_hour:02d}:{match_minute:02d}",
                 'odds': generate_realistic_odds(),
                 'potential': random.choice(['Médio', 'Alto']),
-                'analysis': 'Análise automática com base em odds simuladas para jogos reais.'
+                'analysis': analysis_text
             }
             
             db.collection('matches').add(match_data)
