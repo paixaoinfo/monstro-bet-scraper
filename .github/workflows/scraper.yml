@@ -3,7 +3,7 @@ name: Odds Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *' # Updated to run every 30 mins to be safer
+    - cron: '*/30 * * * *'
 
 jobs:
   scrape:
@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 firebase-admin selenium webdriver-manager
+          pip install firebase-admin
 
       - name: Run Scraper
         env:
