@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monstro Bet 2.0 - Analisador de Viradas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* bg-gray-900 */
+        }
+        .date-picker-input::-webkit-calendar-picker-indicator {
+            filter: invert(0.8);
+        }
+        .card-enter {
+            animation: fadeIn 0.5s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .collapsible-section {
+            transition: max-height 0.5s ease-in-out, opacity 0.5s ease-in-out, visibility 0.5s, padding 0.5s;
+            max-height: 0;
+            opacity: 0;
+            overflow: hidden;
+            visibility: hidden;
+            padding-top: 0;
+            padding-bottom: 0;
+        }
+        .collapsible-section.open {
+            max-height: 1000px; /* Adjust as needed */
+            opacity: 1;
+            visibility: visible;
+            padding-top: 1.5rem; /* p-6 */
+            padding-bottom: 1.5rem; /* p-6 */
+        }
+        #searchBtn:disabled {
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        #leaguesContainer::-webkit-scrollbar { width: 8px; }
+        #leaguesContainer::-webkit-scrollbar-track { background: #1f2937; }
+        #leaguesContainer::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        #leaguesContainer::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+        /* Animação do Spinner */
+        .loader {
+            border: 4px solid #374151; /* bg-gray-700 */
+            border-top: 4px solid #ef4444; /* red-500 */
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="text-gray-200">
+    <div class="container mx-auto p-4 md:p-8 max-w-5xl">
+
+        <header class="text-center mb-10">
+            <h1 class="text-4xl md:text-5xl font-bold text-white tracking-tight">Monstro Bet <span class="text-red-500">2.0</span></h1>
+            <p class="text-gray-400 mt-2 text-lg">Analisador Inteligente de Potencial de Viradas</p>
+        </header>
+
+        <!-- Calculadora de Arbitragem -->
+        <div class="bg-gray-800 rounded-xl shadow-lg mb-8">
+            <button id="toggleCalculatorBtn" class="w-full bg-gray-700/50 hover:bg-gray-700 p-4 rounded-xl text-left text-white font-bold flex justify-between items-center transition-all">
+                <span>Calculadora de Arbitragem</span>
+                <svg id="calculator-arrow" class="w-6 h-6 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+            <div id="calculatorSection" class="collapsible-section px-6">
+                <!-- Conteúdo da Calculadora aqui -->
+            </div>
+        </div>
+
+        <!-- Painel de Busca Simplificado -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
+            <div class="text-center">
+                 <button id="searchBtn" class="w-full md:w-1/2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-lg transition-all transform hover:scale-105 shadow-lg">
+                    Carregar Todos os Jogos
+                </button>
+            </div>
+        </div>
+
+        <!-- Painel de Filtros (inicialmente oculto) -->
+        <div id="filtersSection" class="collapsible-section bg-gray-800 p-6 rounded-xl shadow-lg mb-8 flex-col sm:flex-row items-center gap-4">
+            <!-- Conteúdo dos Filtros aqui -->
+        </div>
+
+        <!-- Container de Resultados -->
+        <div id="results-container" class="space-y-6">
+            <div id="placeholder" class="text-center py-16 px-4 bg-gray-800 rounded-xl border-2 border-dashed border-gray-700">
+                <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 14l2-2m0 0l2-2m-2 2l-2 2m2-2l2 2"/></svg>
+                <h3 class="mt-4 text-lg font-medium text-white">Aguardando sua busca</h3>
+                <p class="mt-1 text-sm text-gray-400">Defina um período, selecione as ligas e clique em "Buscar Jogos".</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        // --- Importações do Firebase ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, query, where, getDocs, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        let db; // Variável do banco de dados
+
+        // --- Inicialização do Firebase ---
+        try {
+            const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+            if (firebaseConfigStr === '{}') throw new Error("Configuração do Firebase não encontrada.");
+            const firebaseConfig = JSON.parse(firebaseConfigStr.replace(/\n/g, "\\n"));
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            const auth = getAuth(app);
+
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+            console.log("Firebase: Autenticado com sucesso.");
+        } catch (error) {
+            console.error("Falha na inicialização do Firebase:", error);
+            const placeholder = document.getElementById('placeholder');
+            if(placeholder) {
+                placeholder.innerHTML = `<h3 class="text-lg font-medium text-red-400">Erro de Conexão</h3><p class="mt-1 text-sm text-gray-400">Não foi possível conectar ao banco de dados. Verifique a configuração e recarregue a página.</p>`;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- LÓGICA DA CALCULADORA DE ARBITRAGEM (sem alterações) ---
+            const toggleCalculatorBtn = document.getElementById('toggleCalculatorBtn');
+            const calculatorSection = document.getElementById('calculatorSection');
+            const calculatorArrow = document.getElementById('calculator-arrow');
+
+            calculatorSection.innerHTML = `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6"><div><label for="numOutcomes" class="block text-sm font-medium text-gray-400 mb-2">Número de Resultados</label><select id="numOutcomes" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-2 focus:ring-2 focus:ring-red-500 focus:border-red-500"><option value="2">2 Resultados</option><option value="3" selected>3 Resultados</option></select></div><div><label for="totalStake" class="block text-sm font-medium text-gray-400 mb-2">Investimento Total (R$)</label><input type="number" id="totalStake" placeholder="100.00" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-2 focus:ring-2 focus:ring-red-500 focus:border-red-500"></div></div><div id="outcomesContainer" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6"></div><div id="calculatorResult" class="bg-gray-900/70 p-4 rounded-lg text-center"><p class="text-gray-400">Preencha as odds e o investimento para ver o resultado.</p></div>`;
+
+            const numOutcomesSelect = document.getElementById('numOutcomes');
+            const totalStakeInput = document.getElementById('totalStake');
+            const outcomesContainer = document.getElementById('outcomesContainer');
+            const calculatorResult = document.getElementById('calculatorResult');
+
+            toggleCalculatorBtn.addEventListener('click', () => {
+                const isOpen = calculatorSection.classList.toggle('open');
+                calculatorArrow.classList.toggle('rotate-180', isOpen);
+                toggleCalculatorBtn.classList.toggle('rounded-b-xl', !isOpen);
+            });
+            function renderCalculatorInputs() { /* ... implementação sem alterações ... */ }
+            function calculateArbitrage() { /* ... implementação sem alterações ... */ }
+            function addCalculatorEventListeners() { /* ... implementação sem alterações ... */ }
+            // Cole a implementação original das funções da calculadora aqui para economizar espaço
+            function renderCalculatorInputs() { const num = parseInt(numOutcomesSelect.value); outcomesContainer.innerHTML = ''; outcomesContainer.className = `grid grid-cols-1 md:grid-cols-${num} gap-4 mb-6`; for (let i = 1; i <= num; i++) { const div = document.createElement('div'); div.className = 'bg-gray-700/50 p-3 rounded-lg space-y-2'; div.innerHTML = `<div><label for="house${i}" class="block text-sm font-medium text-gray-400 mb-1">Casa ${i}</label><input type="text" id="house${i}" class="w-full bg-gray-900/50 border border-gray-600 text-white rounded-lg p-2" placeholder="Nome da Casa"></div><div><label for="odd${i}" class="block text-sm font-medium text-gray-400 mb-1">Odd ${i}</label><input type="number" id="odd${i}" class="odd-input w-full bg-gray-900/50 border border-gray-600 text-white rounded-lg p-2" placeholder="Ex: 3.30"></div><div><label for="stake${i}" class="block text-sm font-medium text-gray-400 mb-1">Aposta ${i} (R$)</label><input type="text" id="stake${i}" class="stake-output w-full bg-gray-900/50 border border-gray-600 text-gray-300 rounded-lg p-2" readonly></div>`; outcomesContainer.appendChild(div); } addCalculatorEventListeners(); calculateArbitrage(); }
+            function calculateArbitrage() { const odds = Array.from(document.querySelectorAll('.odd-input')).map(input => parseFloat(input.value)); const totalStake = parseFloat(totalStakeInput.value); if (!totalStake || odds.some(isNaN) || odds.some(o => o <= 0)) { calculatorResult.innerHTML = '<p class="text-gray-400">Preencha as odds (maiores que 0) e o investimento.</p>'; Array.from(document.querySelectorAll('.stake-output')).forEach(input => input.value = ''); return; } const impliedProbs = odds.map(odd => 1 / odd); const totalProb = impliedProbs.reduce((sum, prob) => sum + prob, 0); const stakes = impliedProbs.map(prob => (totalStake * prob) / totalProb); stakes.forEach((stake, index) => { document.getElementById(`stake${index + 1}`).value = stake.toFixed(2); }); const totalReturn = stakes[0] * odds[0]; const profit = totalReturn - totalStake; const profitPercentage = (profit / totalStake) * 100; if (totalProb >= 1) { calculatorResult.innerHTML = `<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-white"><div><p class="text-xs text-gray-400">Investido</p><p class="font-bold">R$ ${totalStake.toFixed(2)}</p></div><div><p class="text-xs text-gray-400">Retorno</p><p class="font-bold">R$ ${totalReturn.toFixed(2)}</p></div><div><p class="text-xs text-gray-400">Prejuízo</p><p class="font-bold text-red-500">R$ ${Math.abs(profit).toFixed(2)}</p></div><div><p class="text-xs text-gray-400">% Prejuízo</p><p class="font-bold text-red-500">${Math.abs(profitPercentage).toFixed(2)}%</p></div></div>`; } else { calculatorResult.innerHTML = `<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-white"><div><p class="text-xs text-gray-400">Investido</p><p class="font-bold">R$ ${totalStake.toFixed(2)}</p></div><div><p class="text-xs text-gray-400">Retorno</p><p class="font-bold">R$ ${totalReturn.toFixed(2)}</p></div><div><p class="text-xs text-gray-400">Lucro</p><p class="font-bold text-green-400">R$ ${profit.toFixed(2)}</p></div><div><p class="text-xs text-gray-400">% Lucro</p><p class="font-bold text-green-400">${profitPercentage.toFixed(2)}%</p></div></div>`; } }
+            function addCalculatorEventListeners() { document.querySelectorAll('.odd-input').forEach(input => input.addEventListener('input', calculateArbitrage)); }
+            numOutcomesSelect.addEventListener('change', renderCalculatorInputs);
+            totalStakeInput.addEventListener('input', calculateArbitrage);
+            renderCalculatorInputs();
+
+            // --- LÓGICA DO ANALISADOR DE JOGOS (SIMPLIFICADA) ---
+            const searchBtn = document.getElementById('searchBtn');
+            const resultsContainer = document.getElementById('results-container');
+            const filtersSection = document.getElementById('filtersSection');
+
+            let cachedMatches = [];
+
+            // --- FUNÇÃO PARA POPULAR LIGAS (DESATIVADA) ---
+            // Esta função foi desativada temporariamente para priorizar a exibição de odds em tempo real.
+            async function populateLeaguesDynamically() {
+                // A lógica foi removida.
+                console.log("A populacão de ligas foi desativada.");
+            }
+
+            // --- FUNÇÕES DE RENDERIZAÇÃO E FILTRO (MODIFICADAS) ---
+            function renderFilteredResults() {
+                // A lógica de filtro e ordenação foi simplificada para corresponder à nova estrutura de dados.
+                let matchesToRender = [...cachedMatches];
+
+                resultsContainer.innerHTML = '';
+                if (matchesToRender.length === 0) {
+                    resultsContainer.innerHTML = `<div class="text-center py-10 px-4 bg-gray-800 rounded-xl"><p class="text-gray-400">Nenhum jogo encontrado para o período selecionado.</p></div>`;
+                    return;
+                }
+
+                // A agrupação por liga foi removida, pois os dados da liga não estão mais disponíveis no scraper.
+                const gamesGrid = document.createElement('div');
+                gamesGrid.className = 'space-y-6';
+                matchesToRender.forEach(match => createMatchCard(match, gamesGrid));
+                resultsContainer.appendChild(gamesGrid);
+
+                attachCardCalculators();
+            }
+
+            function createMatchCard(match, container) {
+                // Card simplificado para refletir a nova estrutura de dados (sem 'potential' ou 'analysis').
+                const card = document.createElement('div');
+                card.className = `bg-gray-800 p-5 rounded-xl border-l-4 shadow-lg card-enter border-gray-600`;
+
+                // As odds agora são exibidas como texto readonly, pois são valores únicos.
+                card.innerHTML = `
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4">
+                        <div>
+                            <!-- Data e hora foram removidos pois não estão no novo scraper -->
+                            <p class="font-semibold text-gray-300">${match.home_team} vs ${match.away_team}</p>
+                        </div>
+                    </div>
+                    <div class="my-5 grid grid-cols-3 gap-3 text-sm">
+                        <div>
+                            <label class="block text-gray-400 text-xs truncate mb-1">Vitória ${match.home_team}</label>
+                            <input type="text" id="display-home-${match.id}" value="${match.home_odd.toFixed(2)}" class="odd-display w-full bg-gray-900/50 border border-gray-600 text-white rounded-lg p-2 text-sm" readonly>
+                        </div>
+                        <div>
+                            <label class="block text-gray-400 text-xs truncate mb-1">Empate</label>
+                            <input type="text" id="display-draw-${match.id}" value="${match.draw_odd.toFixed(2)}" class="odd-display w-full bg-gray-900/50 border border-gray-600 text-white rounded-lg p-2 text-sm" readonly>
+                        </div>
+                        <div>
+                            <label class="block text-gray-400 text-xs truncate mb-1">Vitória ${match.away_team}</label>
+                            <input type="text" id="display-away-${match.id}" value="${match.away_odd.toFixed(2)}" class="odd-display w-full bg-gray-900/50 border border-gray-600 text-white rounded-lg p-2 text-sm" readonly>
+                        </div>
+                    </div>
+                    <div class="mt-4 border-t border-gray-700 pt-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+                            <div>
+                                <label for="invest-${match.id}" class="block text-sm font-medium text-gray-400 mb-1">Investimento (R$)</label>
+                                <input type="number" id="invest-${match.id}" data-match-id="${match.id}" class="investment-input w-full bg-gray-900/50 border border-gray-600 text-white rounded-lg p-2" placeholder="100.00">
+                            </div>
+                            <div id="result-${match.id}" class="text-sm text-gray-400 text-center sm:text-right bg-gray-900/50 p-2 rounded-lg h-full flex items-center justify-center sm:justify-end">Insira um valor.</div>
+                        </div>
+                        <div class="mt-3 grid grid-cols-3 gap-2 text-center text-sm">
+                            <div class="bg-gray-900/50 p-2 rounded-lg"><p class="text-gray-400 text-xs truncate">Aposta Casa</p><p id="stake-home-${match.id}" class="font-bold text-lg text-white">-</p></div>
+                            <div class="bg-gray-900/50 p-2 rounded-lg"><p class="text-gray-400 text-xs">Aposta Empate</p><p id="stake-draw-${match.id}" class="font-bold text-lg text-white">-</p></div>
+                            <div class="bg-gray-900/50 p-2 rounded-lg"><p class="text-gray-400 text-xs truncate">Aposta Visitante</p><p id="stake-away-${match.id}" class="font-bold text-lg text-white">-</p></div>
+                        </div>
+                    </div>`;
+                container.appendChild(card);
+            }
+
+            function attachCardCalculators() {
+                document.querySelectorAll('.card-enter').forEach(card => {
+                    const investmentInput = card.querySelector('.investment-input');
+                    const matchId = investmentInput.dataset.matchId;
+
+                    const calculatorHandler = () => {
+                        const totalStake = parseFloat(investmentInput.value);
+                        // Lê as odds dos novos campos de texto readonly.
+                        const homeOdd = parseFloat(card.querySelector(`#display-home-${matchId}`).value) || 0;
+                        const drawOdd = parseFloat(card.querySelector(`#display-draw-${matchId}`).value) || 0;
+                        const awayOdd = parseFloat(card.querySelector(`#display-away-${matchId}`).value) || 0;
+
+                        const homeStakeEl = card.querySelector(`#stake-home-${matchId}`);
+                        const drawStakeEl = card.querySelector(`#stake-draw-${matchId}`);
+                        const awayStakeEl = card.querySelector(`#stake-away-${matchId}`);
+                        const resultContainer = card.querySelector(`#result-${matchId}`);
+
+                        if (!totalStake || totalStake <= 0 || !homeOdd || !drawOdd || !awayOdd) {
+                            homeStakeEl.textContent = '-';
+                            drawStakeEl.textContent = '-';
+                            awayStakeEl.textContent = '-';
+                            resultContainer.innerHTML = 'Preencha investimento e odds.';
+                            return;
+                        }
+
+                        const odds = [homeOdd, drawOdd, awayOdd];
+                        const impliedProbs = odds.map(odd => 1 / odd);
+                        const totalProb = impliedProbs.reduce((sum, prob) => sum + prob, 0);
+                        const stakes = impliedProbs.map(prob => (totalStake * prob) / totalProb);
+
+                        homeStakeEl.textContent = `R$ ${stakes[0].toFixed(2)}`;
+                        drawStakeEl.textContent = `R$ ${stakes[1].toFixed(2)}`;
+                        awayStakeEl.textContent = `R$ ${stakes[2].toFixed(2)}`;
+
+                        const totalReturn = stakes[0] * odds[0];
+                        const profit = totalReturn - totalStake;
+                        const profitPercentage = (profit / totalStake) * 100;
+
+                        if (totalProb >= 1) {
+                            resultContainer.innerHTML = `<span class="font-bold text-red-500">Prejuízo: R$ ${Math.abs(profit).toFixed(2)} (${Math.abs(profitPercentage).toFixed(2)}%)</span>`;
+                        } else {
+                            resultContainer.innerHTML = `<span class="font-bold text-green-400">Lucro: R$ ${profit.toFixed(2)} (${profitPercentage.toFixed(2)}%)</span>`;
+                        }
+                    };
+
+                    // O cálculo agora só é acionado pela alteração do investimento.
+                    investmentInput.addEventListener('input', calculatorHandler);
+                    calculatorHandler(); // Chamada inicial
+                });
+            }
+
+            // --- FUNÇÃO PRINCIPAL DE BUSCA (SIMPLIFICADA) ---
+            async function handleSearch() {
+                if (!db) {
+                    resultsContainer.innerHTML = `<div id="placeholder" class="text-center py-10 px-4 bg-gray-800 rounded-xl"><p class="text-red-400">A conexão com o banco de dados não foi estabelecida.</p></div>`;
+                    return;
+                }
+
+                searchBtn.disabled = true;
+                searchBtn.textContent = 'Carregando...';
+                resultsContainer.innerHTML = `<div class="text-center py-16 px-4 bg-gray-800 rounded-xl"><div class="loader mx-auto"></div><p class="mt-4 text-gray-400">Buscando todos os jogos...</p></div>`;
+
+                try {
+                    const matchesRef = collection(db, 'matches-Flashscore');
+                    // Query foi simplificada para buscar todos os documentos, sem filtros.
+                    const querySnapshot = await getDocs(matchesRef);
+                    cachedMatches = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                    if (cachedMatches.length === 0) {
+                        resultsContainer.innerHTML = `<div id="placeholder" class="text-center py-10 px-4 bg-gray-800 rounded-xl"><p class="text-gray-400">Nenhum jogo encontrado na coleção 'matches-Flashscore'.</p></div>`;
+                        return;
+                    }
+
+                    renderFilteredResults();
+
+                } catch (error) {
+                    console.error("Erro ao buscar jogos no Firestore:", error);
+                    resultsContainer.innerHTML = `<div id="placeholder" class="text-center py-10 px-4 bg-gray-800 rounded-xl"><p class="text-red-400">Ocorreu um erro ao buscar os dados: ${error.message}.</p></div>`;
+                } finally {
+                    searchBtn.disabled = false;
+                    searchBtn.textContent = 'Carregar Todos os Jogos';
+                }
+            }
+
+            // --- EVENT LISTENERS ---
+            searchBtn.addEventListener('click', handleSearch);
+        });
+    </script>
+</body>
+</html>
