@@ -30,7 +30,7 @@ except Exception as e:
     print(f"Erro ao inicializar Firebase: {e}")
     db = None
 
-# A coleção onde os dados serão armazenados (já corrigida no frontend)
+# A coleção onde os dados serão armazenados
 COLLECTION_NAME = 'matches-flashscore'
 # URL base para raspagem do Oddschecker (Futebol)
 BASE_URL = 'https://www.oddschecker.com/futebol'
@@ -51,39 +51,47 @@ async def fetch_odds(browser, match_url):
     """
     page = await browser.new_page()
     try:
-        await page.goto(match_url, wait_until="domcontentloaded", timeout=30000)
-        print(f"   -> Raspando detalhes: {match_url}")
+        await page.goto(match_url, wait_until="domcontentloaded", timeout=60000)
+        print(f"    -> Raspando detalhes: {match_url}")
 
-        # Seletor para encontrar as melhores odds por mercado de várias casas
-        # Foca no mercado 1X2 (Resultado Final)
         odds_data = {
             'home': [],
             'draw': [],
             'away': []
         }
         
-        # O seletor abaixo é um exemplo genérico que precisa de ser ajustado ao HTML atual do site.
-        # Estamos a simular uma raspagem robusta de múltiplas colunas/linhas
-        odds_table = await page.locator('div[data-testid="market-odds-table"]').nth(0).all_text_contents()
+        # --- LÓGICA DE EXTRAÇÃO REAL (SUBSTITUIR A SIMULAÇÃO) ---
+        # ATENÇÃO: A estrutura do site pode mudar. Este seletor é um exemplo e precisa ser validado.
         
-        # Simulação de Extração (Como não podemos raspar em tempo real, usamos um mock para a estrutura)
-        # O Jules implementaria aqui o código Playwright/BeautifulSoup para extrair as 3 colunas e N linhas.
+        # Espera o contêiner principal das odds carregar
+        await page.wait_for_selector('div[data-testid="market-odds-table"]', timeout=30000)
         
-        # Dados simulados para demonstrar a estrutura Multi-Odds
-        odds_simuladas = {
-            'Betano': [2.12, 4.00, 3.10],
-            'Stake': [2.05, 3.80, 3.15],
-            'Bet365': [2.10, 3.90, 3.00]
-        }
-        
-        for house_name, values in odds_simuladas.items():
-            if is_valid_odd(values[0]):
-                odds_data['home'].append({'value': values[0], 'house': house_name})
-            if is_valid_odd(values[1]):
-                odds_data['draw'].append({'value': values[1], 'house': house_name})
-            if is_valid_odd(values[2]):
-                odds_data['away'].append({'value': values[2], 'house': house_name})
-                
+        # Pega todas as linhas da tabela de odds
+        rows = await page.locator('div[data-testid="market-odds-table"] tr[data-testid^="row-"]').all()
+
+        for row in rows:
+            try:
+                # Extrai o nome da casa de apostas (geralmente está no 'alt' de uma imagem ou em um texto)
+                house_name_locator = row.locator('td:first-child a img')
+                house_name = await house_name_locator.get_attribute('alt') if await house_name_locator.count() > 0 else 'Desconhecida'
+
+                # Pega os valores das odds da linha
+                odds_locators = row.locator('td[data-testid$="-cell"] button span')
+                odds_values_raw = await odds_locators.all_text_contents()
+                odds_values = [float(o) for o in odds_values_raw if is_valid_odd(o)]
+
+                # Garante que temos as 3 odds (home, draw, away)
+                if len(odds_values) == 3:
+                    if is_valid_odd(odds_values[0]):
+                        odds_data['home'].append({'value': odds_values[0], 'house': house_name.strip()})
+                    if is_valid_odd(odds_values[1]):
+                        odds_data['draw'].append({'value': odds_values[1], 'house': house_name.strip()})
+                    if is_valid_odd(odds_values[2]):
+                        odds_data['away'].append({'value': odds_values[2], 'house': house_name.strip()})
+            except Exception as e:
+                print(f"      - Erro ao processar uma linha da tabela de odds: {e}")
+                continue # Pula para a próxima linha em caso de erro
+
         # Classifica por valor (Odd mais alta primeiro)
         for key in odds_data:
             odds_data[key].sort(key=lambda x: x['value'], reverse=True)
@@ -109,7 +117,7 @@ def select_unique_odds(odds_list):
         best_odd = None
         
         # Tenta encontrar a melhor odd que ainda não tenha sido usada
-        for odd_item in odds_list[market]:
+        for odd_item in odds_list.get(market, []):
             if odd_item['house'] not in used_houses:
                 best_odd = odd_item
                 break
@@ -124,15 +132,15 @@ def select_unique_odds(odds_list):
             used_houses.add(best_odd['house'])
         
         # Se não encontrou uma casa única, pega a melhor disponível (sacrifica a regra para garantir 3 resultados)
-        elif odds_list[market]:
-             # Pega a melhor odd, mesmo que a casa se repita (segurança)
-             best_odd = odds_list[market][0]
-             unique_odds.append({
-                 'market': market,
-                 'value': best_odd['value'],
-                 'house': best_odd['house']
-             })
-             
+        elif odds_list.get(market):
+              # Pega a melhor odd, mesmo que a casa se repita (segurança)
+              best_odd = odds_list[market][0]
+              unique_odds.append({
+                  'market': market,
+                  'value': best_odd['value'],
+                  'house': best_odd['house']
+              })
+              
     # Retorna os 3 resultados únicos (ou os 3 melhores disponíveis)
     return {item['market']: {'value': item['value'], 'house': item['house']} for item in unique_odds}
 
@@ -150,32 +158,57 @@ async def run_scraper():
         page = await browser.new_page()
         
         try:
-            # Acessa o Oddschecker para Futebol (exige raspagem de seletores complexos)
-            await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+            # Acessa a página principal de futebol
+            await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
             
-            # SIMULAÇÃO: Encontrando links de partidas futuras (O Jules faria isso com seletores)
             print("Buscando jogos futuros...")
             
-            # Filtro de data: apenas jogos de hoje (08/10) até 7 dias no futuro
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            seven_days_later_str = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-
-            # MOCK de dados brutos que seriam raspados do Oddschecker
-            # O URL abaixo seria o link para a página de detalhe da Odd
-            mock_matches = [
-                {'homeTeam': 'Orlando City SC', 'awayTeam': 'Vancouver Whitecaps FC', 'league': 'USA MLS', 'date': '2025-10-12', 'time': '16:00', 'url': 'mock_url_1'},
-                {'homeTeam': 'Arsenal', 'awayTeam': 'Liverpool', 'league': 'Premier League', 'date': '2025-10-13', 'time': '12:00', 'url': 'mock_url_2'},
-                {'homeTeam': 'Corinthians', 'awayTeam': 'São Paulo', 'league': 'Brasileirão Série A', 'date': '2025-10-14', 'time': '21:30', 'url': 'mock_url_3'},
-            ]
+            # --- LÓGICA DE EXTRAÇÃO DOS JOGOS (SUBSTITUIR A SIMULAÇÃO) ---
+            # ATENÇÃO: Esta é a segunda parte que precisa ser real.
+            # O código abaixo deve encontrar os links de todas as partidas na página.
             
+            # Exemplo de seletor (precisa ser validado):
+            match_links = await page.locator('a[data-testid="match-details-link"]').all()
+            
+            scraped_matches_info = []
+            
+            # Limita a 10 jogos para não sobrecarregar em testes
+            for link in match_links[:10]:
+                try:
+                    href = await link.get_attribute('href')
+                    full_url = f"https://www.oddschecker.com{href}"
+                    
+                    # Extrai informações da partida diretamente do link ou de elementos próximos
+                    teams_text = await link.inner_text()
+                    teams = teams_text.split('\n')
+                    home_team, away_team = (teams[0], teams[1]) if len(teams) >= 2 else ('Desconhecido', 'Desconhecido')
+                    
+                    # A data, hora e liga podem precisar de seletores mais complexos
+                    # Aqui usamos um valor padrão para demonstração
+                    match_date = datetime.now().strftime("%Y-%m-%d")
+                    match_time = '12:00'
+                    league = 'Liga Exemplo' # Idealmente, extrair isso da página também
+
+                    scraped_matches_info.append({
+                        'homeTeam': home_team,
+                        'awayTeam': away_team,
+                        'league': league,
+                        'date': match_date,
+                        'time': match_time,
+                        'url': full_url
+                    })
+                except Exception as e:
+                    print(f"Erro ao processar um link de jogo: {e}")
+                    continue
+
             all_scraped_data = []
 
-            for match in mock_matches:
-                # Na implementação real, match['url'] seria usado para fetch_odds
+            for match in scraped_matches_info:
+                # Agora o `fetch_odds` usará a URL real
                 full_odds_data = await fetch_odds(browser, match['url']) 
                 
-                if full_odds_data:
-                    # 1. Aplica a lógica de Odd Única (Não Repetir Casas) para 3 resultados
+                if full_odds_data and full_odds_data['home'] and full_odds_data['draw'] and full_odds_data['away']:
+                    # 1. Aplica a lógica de Odd Única
                     unique_odds = select_unique_odds(full_odds_data)
                     
                     # 2. Cria o documento a ser salvo
@@ -183,21 +216,22 @@ async def run_scraper():
                         'home_team': match['homeTeam'],
                         'away_team': match['awayTeam'],
                         'league': match['league'],
-                        'date': match['date'], # Formato 'YYYY-MM-DD'
+                        'date': match['date'],
                         'time': match['time'],
-                        # Campos de Odd Única (o frontend usará estes para o cálculo de arbitragem)
                         'home_odd': unique_odds.get('home', {}).get('value'),
                         'draw_odd': unique_odds.get('draw', {}).get('value'),
                         'away_odd': unique_odds.get('away', {}).get('value'),
-                        # Campos da Casa de Apostas (para exibição)
                         'home_house': unique_odds.get('home', {}).get('house'),
                         'draw_house': unique_odds.get('draw', {}).get('house'),
                         'away_house': unique_odds.get('away', {}).get('house'),
-                        # O documento original com todas as odds para verificação no Firebase
                         'all_odds_raw': full_odds_data 
                     }
                     all_scraped_data.append(document_data)
             
+            if not all_scraped_data:
+                print("Nenhum jogo com odds completas foi encontrado para salvar.")
+                return
+
             print(f"=> SALVANDO {len(all_scraped_data)} JOGOS NO FIREBASE...")
 
             # --- SALVANDO NO FIRESTORE (Upsert) ---
@@ -205,10 +239,10 @@ async def run_scraper():
             collection_ref = db.collection(COLLECTION_NAME)
 
             for data in all_scraped_data:
-                # Cria um ID de documento único baseado nos times e na data para evitar duplicação
+                # Cria um ID de documento único para evitar duplicação
                 doc_id = f"{data['home_team']}-{data['away_team']}-{data['date']}".replace(" ", "_").replace(":", "_")
                 doc_ref = collection_ref.document(doc_id)
-                batch.set(doc_ref, data)
+                batch.set(doc_ref, data, merge=True) # merge=True atualiza o documento se ele já existir
                 
             batch.commit()
             print("Processo de raspagem concluído e dados salvos no Firebase.")
@@ -221,7 +255,6 @@ async def run_scraper():
 
 
 if __name__ == '__main__':
-    # Usando Mock de Credenciais se estiver em modo de simulação
     if not os.environ.get('FIREBASE_CREDENTIALS'):
         print("Aviso: Usando credenciais de simulação. Substitua pela credencial REAL no GitHub Secrets.")
 
