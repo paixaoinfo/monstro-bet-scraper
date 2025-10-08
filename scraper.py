@@ -48,12 +48,19 @@ async def fetch_and_save_odds(db):
         async with async_playwright() as p:
             # Lança o navegador Chromium
             browser = await p.chromium.launch()
-            page = await browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            # Usar user_agent e headers para evitar bloqueios
+            page = await browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"}
+            )
             
             print(f"=> Navegando para {URL_SCRAPE}")
-            await page.goto(URL_SCRAPE, wait_until='networkidle', timeout=60000)
-            
+            # Aumentar o timeout e adicionar uma espera mais longa
+            await page.goto(URL_SCRAPE, wait_until='load', timeout=90000)
+            await page.wait_for_timeout(5000) # Espera 5 segundos para o JS carregar
+
             # 1. Espera pelo elemento que contém todos os jogos.
+            # O seletor 'div.data-row-container' é genérico, mas vamos usá-lo.
             await page.wait_for_selector('div.data-row-container', timeout=30000)
 
             # 2. Extrai as linhas de jogos
@@ -77,7 +84,6 @@ async def fetch_and_save_odds(db):
                         date_with_year = f"{date_data_str} {today.year}"
                         match_datetime = datetime.strptime(date_with_year, '%d %b %Y').date()
                     except ValueError:
-                        # Se falhar, tenta um formato mais longo
                         try:
                             # Tenta outro formato comum no oddschecker
                             date_with_year = f"{date_data_str} {today.year}"
