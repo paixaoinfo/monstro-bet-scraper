@@ -3,7 +3,7 @@ name: Odds Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *' # Executa no início de cada hora
+    - cron: '45 * * * *' # Executa no minuto 45 de cada hora
 
 jobs:
   scrape:
@@ -17,14 +17,16 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
+      - name: Install dependencies and Playwright
         run: |
           python -m pip install --upgrade pip
-          pip install firebase-admin requests
+          # Instala dependências do Firebase e a biblioteca Playwright
+          pip install firebase-admin lxml playwright
+          # Instala o navegador Chromium que o Playwright usará para o scraping
+          playwright install chromium --with-deps
 
       - name: Run Scraper
+        # Remove a variável de ambiente ODDS_API_KEY, pois não é mais usada.
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python scraper.py
-
