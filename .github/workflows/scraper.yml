@@ -3,7 +3,7 @@ name: Odds Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *' # Executa no início de cada hora
+    - cron: '45 * * * *' # Executa no minuto 45 de cada hora
 
 jobs:
   scrape:
