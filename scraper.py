@@ -44,7 +44,10 @@ def upload_to_firestore(db, data, collection_name):
     if not db or not data:
         print("Database not initialized or no data to upload.")
         return
-    print(f"\nStarting upload to '{collection_name}' collection...")
+
+    # User-requested log message
+    print(f"\n=> SALVANDO {len(data)} JOGOS NO FIREBASE...")
+
     collection_ref = db.collection(collection_name)
 
     docs = collection_ref.stream()
@@ -52,7 +55,7 @@ def upload_to_firestore(db, data, collection_name):
     for doc in docs:
         doc.reference.delete()
         deleted_count += 1
-    print(f"Cleared {deleted_count} documents from the collection.")
+    print(f"Cleared {deleted_count} old documents from the collection.")
 
     uploaded_count = 0
     for record in data:
@@ -192,14 +195,7 @@ async def main():
                     min_date = min(dates)
                     max_date = max(dates)
 
-                    # Save to local file for verification
-                    file_path = "oddschecker.json"
-                    with open(file_path, 'w') as f:
-                        json.dump(future_matches, f, indent=2)
-                    print(f"Saved {len(future_matches)} matches to {file_path} for verification.")
-
                     print("\n--- Verification Log ---")
-                    print(f"Total matches for upload: {len(future_matches)}")
                     print(f"Earliest match date: {min_date}")
                     print(f"Latest match date: {max_date}")
                     print("------------------------")
