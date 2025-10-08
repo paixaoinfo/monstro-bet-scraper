@@ -71,15 +71,18 @@ async def fetch_and_save_odds(db):
                     date_data_str = await row.locator('div.ko-date').inner_text()
 
                     # Processamento Simples de Data para Filtragem
-                    # Tenta converter para um objeto datetime para saber se é futuro
                     match_datetime = None
                     try:
-                        # Ex: '08 Oct' + Ano Atual (Ex: '08 Oct 2025')
+                        # Tenta converter para um objeto datetime para saber se é futuro
                         date_with_year = f"{date_data_str} {today.year}"
                         match_datetime = datetime.strptime(date_with_year, '%d %b %Y').date()
                     except ValueError:
-                        # Falha na conversão de data (ignorar filtro se não for possível verificar)
-                        pass
+                        # Se falhar, tenta um formato mais longo
+                        try:
+                            date_with_year = f"{date_data_str} {today.year}"
+                            match_datetime = datetime.strptime(date_with_year, '%a %d %b %Y').date()
+                        except ValueError:
+                             pass
 
                     # Filtro de Data: Ignora jogos que já passaram (Obrigatório)
                     if match_datetime and match_datetime < today:
@@ -114,7 +117,7 @@ async def fetch_and_save_odds(db):
                             'draw_odd': draw_odd,
                             'away_odd': away_odd,
                             'time': time_data,
-                            'date': date_data_str, # Mantém a data no formato do site para referência
+                            'date': match_datetime.isoformat() if match_datetime else None, # Formato ISO para o Frontend ler facilmente
                             'last_updated': datetime.now().isoformat()
                         })
 
@@ -133,13 +136,9 @@ async def fetch_and_save_odds(db):
     if db and games_data:
         print(f"\n=> SALVANDO {len(games_data)} JOGOS NO FIREBASE...")
         
-        # Limpar coleção antiga e salvar os novos (Estratégia mais segura)
+        # Salvar novos dados
+        batch = db.batch()
         collection_ref = db.collection(COLLECTION_NAME)
-        
-        # Opcional: Deletar todos os documentos antigos
-        # docs = collection_ref.stream()
-        # for doc in docs:
-        #     doc.reference.delete()
         
         # Salvar novos dados
         batch = db.batch()
