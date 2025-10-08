@@ -1,139 +1,153 @@
-import os
+import asyncio
+from playwright.async_api import async_playwright
 import json
+import os
+from fractions import Fraction
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
-import random
-import requests
 
-# --- CONFIGURAÇÃO ---
-ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
-# AGORA VAMOS BUSCAR TODOS OS JOGOS DE FUTEBOL E FILTRAR DEPOIS
-API_URL = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?regions=br&markets=h2h&apiKey={ODDS_API_KEY}"
+def convert_fractional_to_decimal(fractional_odd):
+    """Converts fractional odds string (e.g., '5/2') to decimal format."""
+    try:
+        if "/" in fractional_odd:
+            numerator, denominator = map(int, fractional_odd.split('/'))
+            return round(1 + (numerator / denominator), 2)
+        else:
+            if fractional_odd.upper() == 'EVS':
+                return 2.0
+            return float(fractional_odd)
+    except (ValueError, ZeroDivisionError):
+        return None
 
-# LIGAS QUE QUEREMOS MANTER
-DESIRED_LEAGUES = [
-    'soccer_epl', # Premier League
-    'soccer_uefa_champions_league', # Champions League
-    'soccer_brazil_campeonato_brasileiro_serie_a' # Brasileirão
-]
+def initialize_firebase():
+    """
+    Initializes the Firebase Admin SDK using credentials from an environment variable.
+    """
+    try:
+        cred_json_str = os.environ.get('FIREBASE_CREDENTIALS')
+        if not cred_json_str:
+            print("FIREBASE_CREDENTIALS environment variable not set.")
+            return None
 
-ANALYSIS_TEMPLATES = {
-    "classic": ["Clássico de grande rivalidade. A tensão pode levar a um cenário imprevisível e com potencial para viradas.", "Jogo onde a camisa pesa. A tradição fala mais alto e o fator emocional será decisivo."],
-    "technical": ["Duelo de duas equipas muito organizadas taticamente. A que errar menos provavelmente sairá com a vitória.", "Partida que promete ser um xadrez tático. A estratégia dos treinadores será fundamental."],
-    "balanced": ["Confronto muito equilibrado. O fator casa pode ser o diferencial para o resultado final.", "Partida sem um favorito claro. Detalhes podem definir o vencedor."]
-}
+        cred_json = json.loads(cred_json_str)
+        cred = credentials.Certificate(cred_json)
 
-# --- INICIALIZAÇÃO DO FIREBASE ---
-try:
-    cred_json = json.loads(os.environ.get('FIREBASE_CREDENTIALS'))
-    cred = credentials.Certificate(cred_json)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase initialized successfully.")
-except Exception as e:
-    print(f"Error initializing Firebase: {e}")
-    exit()
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
 
-# --- FUNÇÕES AUXILIARES ---
-def clear_collection(collection_ref):
+        print("Firebase initialized successfully.")
+        return firestore.client()
+    except Exception as e:
+        print(f"Error initializing Firebase: {e}")
+        return None
+
+def upload_to_firestore(db, data, collection_name):
+    """Clears a collection and uploads new data."""
+    if not db or not data:
+        print("Database not initialized or no data to upload.")
+        return
+
+    print(f"Starting upload to '{collection_name}' collection...")
+    collection_ref = db.collection(collection_name)
+
+    # Clear the collection
     docs = collection_ref.stream()
+    deleted_count = 0
     for doc in docs:
         doc.reference.delete()
-    print("Coleção 'matches' limpa.")
+        deleted_count += 1
+    print(f"Cleared {deleted_count} documents from the collection.")
 
-def generate_smart_analysis(home_team, away_team):
-    classic_teams = ["Real Madrid", "Barcelona", "Liverpool", "Manchester United", "Flamengo", "Palmeiras", "Corinthians", "São Paulo", "River Plate", "Boca Juniors", "Benfica", "FC Porto"]
-    if home_team in classic_teams and away_team in classic_teams:
-        return random.choice(ANALYSIS_TEMPLATES["classic"])
-    return random.choice(ANALYSIS_TEMPLATES["balanced"])
+    # Upload new data
+    uploaded_count = 0
+    for record in data:
+        collection_ref.add(record)
+        uploaded_count += 1
+    print(f"Successfully uploaded {uploaded_count} new documents.")
 
-# --- FUNÇÃO PRINCIPAL DO ROBÔ ---
-def fetch_real_odds():
-    print(f"A buscar odds da API: {API_URL.replace(ODDS_API_KEY, '***')}")
-    
-    try:
-        response = requests.get(API_URL)
-        # Não usamos raise_for_status() para tratar o 422 manualmente
-        if response.status_code == 422:
-            print("API retornou 422: Nenhuma odd disponível para os desportos/regiões solicitados no momento.")
-            return # Termina a execução de forma limpa
+
+async def main():
+    """
+    Main function to scrape odds from oddschecker.com, save them to a file,
+    and upload them to Firebase.
+    Note: This scraper targets the main football page of oddschecker.com.
+    A more advanced implementation would be required to navigate to and scrape
+    all the specific leagues mentioned in the initial project requirements.
+    """
+    db = initialize_firebase()
+    if not db:
+        print("Halting execution due to Firebase initialization failure.")
+        print("Please ensure the FIREBASE_CREDENTIALS environment variable is set correctly.")
+        return
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
         
-        response.raise_for_status() # Levanta erro para outros códigos (401, 404, 500, etc.)
-        games = response.json()
-        
-        if not games:
-            print("Nenhum jogo encontrado na resposta da API.")
-            return
+        scraped_data = []
 
-        print(f"Encontrados {len(games)} jogos na API. A filtrar pelas ligas desejadas...")
-        
-        matches_ref = db.collection('matches')
-        clear_collection(matches_ref)
-
-        games_to_add = 0
-        for game in games:
-            # FILTRA APENAS OS JOGOS DAS LIGAS QUE QUEREMOS
-            if game.get('sport_key') not in DESIRED_LEAGUES:
-                continue
+        try:
+            target_url = "https://www.oddschecker.com/football"
+            print(f"Navigating to {target_url}")
+            await page.goto(target_url, timeout=90000)
+            print("Page loaded.")
 
             try:
-                home_team = game.get('home_team')
-                away_team = game.get('away_team')
-                commence_time = game.get('commence_time')
+                close_button_selector = "span.PopupCloseIcon_pb1x1zx"
+                await page.wait_for_selector(close_button_selector, timeout=15000)
+                await page.click(close_button_selector)
+                print("Closed the region selection pop-up.")
+                await page.wait_for_timeout(2000)
+            except Exception:
+                print("Region pop-up not found or already handled.")
+
+            match_rows = await page.locator("div.RowWrapper_r6ns4d6").all()
+            print(f"Found {len(match_rows)} match rows.")
+
+            for row in match_rows:
+                team_name_elements = await row.locator("div.TeamWrapper_tedwdbv p").all()
+                odds_buttons = await row.locator("button.bestOddsButton_b3gzcta").all()
+
+                if len(team_name_elements) == 2 and len(odds_buttons) == 3:
+                    home_team = await team_name_elements[0].inner_text()
+                    away_team = await team_name_elements[1].inner_text()
+
+                    home_odd_frac = await odds_buttons[0].inner_text()
+                    draw_odd_frac = await odds_buttons[1].inner_text()
+                    away_odd_frac = await odds_buttons[2].inner_text()
+
+                    home_odd_dec = convert_fractional_to_decimal(home_odd_frac)
+                    draw_odd_dec = convert_fractional_to_decimal(draw_odd_frac)
+                    away_odd_dec = convert_fractional_to_decimal(away_odd_frac)
+
+                    if all([home_team, away_team, home_odd_dec, draw_odd_dec, away_odd_dec]):
+                        scraped_data.append({
+                            "home_team": home_team.strip(),
+                            "away_team": away_team.strip(),
+                            "home_odd": home_odd_dec,
+                            "draw_odd": draw_odd_dec,
+                            "away_odd": away_odd_dec,
+                        })
+
+            if scraped_data:
+                file_path = "oddschecker.json" # Corrected filename
+                with open(file_path, 'w') as f:
+                    json.dump(scraped_data, f, indent=2)
+                print(f"\nSuccessfully extracted and saved data for {len(scraped_data)} matches to {file_path}.")
                 
-                dt_object = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
-                game_date = dt_object.strftime("%Y-%m-%d")
-                game_time = dt_object.strftime("%H:%M")
+                upload_to_firestore(db, scraped_data, "matches-flashscore")
+            else:
+                print("\nNo data was extracted, so no file was created and nothing was uploaded.")
 
-                best_odds = {"home": {"value": 0, "house": "N/A"}, "draw": {"value": 0, "house": "N/A"}, "away": {"value": 0, "house": "N/A"}}
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            # Screenshots are for debugging and should not be committed.
+            # await page.screenshot(path="error_screenshot_oddschecker.png")
+            # print("Screenshot saved to error_screenshot_oddschecker.png")
 
-                for bookmaker in game.get('bookmakers', []):
-                    market = next((m for m in bookmaker.get('markets', []) if m['key'] == 'h2h'), None)
-                    if market:
-                        for outcome in market.get('outcomes', []):
-                            price = outcome['price']
-                            if outcome['name'] == home_team and price > best_odds['home']['value']:
-                                best_odds['home'] = {'value': price, 'house': bookmaker['title']}
-                            elif outcome['name'] == 'Draw' and price > best_odds['draw']['value']:
-                                best_odds['draw'] = {'value': price, 'house': bookmaker['title']}
-                            elif outcome['name'] == away_team and price > best_odds['away']['value']:
-                                best_odds['away'] = {'value': price, 'house': bookmaker['title']}
-                
-                if best_odds['home']['value'] == 0:
-                    continue
-
-                analysis_text = generate_smart_analysis(home_team, away_team)
-
-                match_data = {
-                    'homeTeam': home_team,
-                    'awayTeam': away_team,
-                    'league': game.get('sport_title'),
-                    'date': game_date,
-                    'time': game_time,
-                    'odds': best_odds,
-                    'potential': random.choice(['Médio', 'Alto']),
-                    'analysis': analysis_text
-                }
-                
-                db.collection('matches').add(match_data)
-                games_to_add += 1
-                print(f"Adicionado à base de dados: {home_team} vs {away_team}")
-
-            except Exception as e:
-                print(f"Erro ao processar um jogo: {e}")
-                continue
-        
-        if games_to_add == 0:
-            print("Nenhum jogo das ligas desejadas foi encontrado na resposta da API.")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Falha na ligação à Odds API: {e}")
-    except Exception as e:
-        print(f"Ocorreu um erro inesperado: {e}")
+        finally:
+            await browser.close()
+            print("Browser closed.")
 
 if __name__ == "__main__":
-    fetch_real_odds()
-    print("Processo do robô concluído.")
-
+    asyncio.run(main())
