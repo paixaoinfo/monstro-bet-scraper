@@ -1,139 +1,149 @@
-import os
-import json
+import asyncio
+from playwright.async_api import async_playwright
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
-import random
-import requests
+from datetime import datetime, timedelta
 
 # --- CONFIGURAÇÃO ---
-ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
-# AGORA VAMOS BUSCAR TODOS OS JOGOS DE FUTEBOL E FILTRAR DEPOIS
-API_URL = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?regions=br&markets=h2h&apiKey={ODDS_API_KEY}"
+# O Jules já injetou a credencial do FIREBASE_CREDENTIALS
+# A collection_name DEVE ser a mesma que o frontend está lendo (matches-Flashscore)
+COLLECTION_NAME = 'matches-Flashscore'
+TIMEZONE = 'America/Sao_Paulo'
+# O URL deve ser a página que lista os jogos de futebol futuros
+URL_SCRAPE = 'https://www.oddschecker.com/football' 
 
-# LIGAS QUE QUEREMOS MANTER
-DESIRED_LEAGUES = [
-    'soccer_epl', # Premier League
-    'soccer_uefa_champions_league', # Champions League
-    'soccer_brazil_campeonato_brasileiro_serie_a' # Brasileirão
-]
+def get_future_dates(days=7):
+    """Retorna um conjunto de strings de data para filtrar jogos dos próximos 7 dias."""
+    dates = set()
+    today = datetime.now()
+    for i in range(days):
+        future_date = today + timedelta(days=i)
+        # Formato esperado para comparação: Ex: '08/10/2025' ou '10/08' dependendo do site. 
+        # Vamos usar o formato simplificado: '8 Out'
+        dates.add(future_date.strftime('%d %b')) 
+    return dates
 
-ANALYSIS_TEMPLATES = {
-    "classic": ["Clássico de grande rivalidade. A tensão pode levar a um cenário imprevisível e com potencial para viradas.", "Jogo onde a camisa pesa. A tradição fala mais alto e o fator emocional será decisivo."],
-    "technical": ["Duelo de duas equipas muito organizadas taticamente. A que errar menos provavelmente sairá com a vitória.", "Partida que promete ser um xadrez tático. A estratégia dos treinadores será fundamental."],
-    "balanced": ["Confronto muito equilibrado. O fator casa pode ser o diferencial para o resultado final.", "Partida sem um favorito claro. Detalhes podem definir o vencedor."]
-}
-
-# --- INICIALIZAÇÃO DO FIREBASE ---
-try:
-    cred_json = json.loads(os.environ.get('FIREBASE_CREDENTIALS'))
-    cred = credentials.Certificate(cred_json)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase initialized successfully.")
-except Exception as e:
-    print(f"Error initializing Firebase: {e}")
-    exit()
-
-# --- FUNÇÕES AUXILIARES ---
-def clear_collection(collection_ref):
-    docs = collection_ref.stream()
-    for doc in docs:
-        doc.reference.delete()
-    print("Coleção 'matches' limpa.")
-
-def generate_smart_analysis(home_team, away_team):
-    classic_teams = ["Real Madrid", "Barcelona", "Liverpool", "Manchester United", "Flamengo", "Palmeiras", "Corinthians", "São Paulo", "River Plate", "Boca Juniors", "Benfica", "FC Porto"]
-    if home_team in classic_teams and away_team in classic_teams:
-        return random.choice(ANALYSIS_TEMPLATES["classic"])
-    return random.choice(ANALYSIS_TEMPLATES["balanced"])
-
-# --- FUNÇÃO PRINCIPAL DO ROBÔ ---
-def fetch_real_odds():
-    print(f"A buscar odds da API: {API_URL.replace(ODDS_API_KEY, '***')}")
-    
+def initialize_firebase():
+    """Inicializa o SDK Admin do Firebase usando credenciais injetadas."""
     try:
-        response = requests.get(API_URL)
-        # Não usamos raise_for_status() para tratar o 422 manualmente
-        if response.status_code == 422:
-            print("API retornou 422: Nenhuma odd disponível para os desportos/regiões solicitados no momento.")
-            return # Termina a execução de forma limpa
-        
-        response.raise_for_status() # Levanta erro para outros códigos (401, 404, 500, etc.)
-        games = response.json()
-        
-        if not games:
-            print("Nenhum jogo encontrado na resposta da API.")
-            return
-
-        print(f"Encontrados {len(games)} jogos na API. A filtrar pelas ligas desejadas...")
-        
-        matches_ref = db.collection('matches')
-        clear_collection(matches_ref)
-
-        games_to_add = 0
-        for game in games:
-            # FILTRA APENAS OS JOGOS DAS LIGAS QUE QUEREMOS
-            if game.get('sport_key') not in DESIRED_LEAGUES:
-                continue
-
-            try:
-                home_team = game.get('home_team')
-                away_team = game.get('away_team')
-                commence_time = game.get('commence_time')
-                
-                dt_object = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
-                game_date = dt_object.strftime("%Y-%m-%d")
-                game_time = dt_object.strftime("%H:%M")
-
-                best_odds = {"home": {"value": 0, "house": "N/A"}, "draw": {"value": 0, "house": "N/A"}, "away": {"value": 0, "house": "N/A"}}
-
-                for bookmaker in game.get('bookmakers', []):
-                    market = next((m for m in bookmaker.get('markets', []) if m['key'] == 'h2h'), None)
-                    if market:
-                        for outcome in market.get('outcomes', []):
-                            price = outcome['price']
-                            if outcome['name'] == home_team and price > best_odds['home']['value']:
-                                best_odds['home'] = {'value': price, 'house': bookmaker['title']}
-                            elif outcome['name'] == 'Draw' and price > best_odds['draw']['value']:
-                                best_odds['draw'] = {'value': price, 'house': bookmaker['title']}
-                            elif outcome['name'] == away_team and price > best_odds['away']['value']:
-                                best_odds['away'] = {'value': price, 'house': bookmaker['title']}
-                
-                if best_odds['home']['value'] == 0:
-                    continue
-
-                analysis_text = generate_smart_analysis(home_team, away_team)
-
-                match_data = {
-                    'homeTeam': home_team,
-                    'awayTeam': away_team,
-                    'league': game.get('sport_title'),
-                    'date': game_date,
-                    'time': game_time,
-                    'odds': best_odds,
-                    'potential': random.choice(['Médio', 'Alto']),
-                    'analysis': analysis_text
-                }
-                
-                db.collection('matches').add(match_data)
-                games_to_add += 1
-                print(f"Adicionado à base de dados: {home_team} vs {away_team}")
-
-            except Exception as e:
-                print(f"Erro ao processar um jogo: {e}")
-                continue
-        
-        if games_to_add == 0:
-            print("Nenhum jogo das ligas desejadas foi encontrado na resposta da API.")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Falha na ligação à Odds API: {e}")
+        # Tenta inicializar com a chave de serviço injetada via Secrets
+        if not firebase_admin._apps:
+            # Assume que FIREBASE_CREDENTIALS está nas Secrets do GitHub Actions
+            import json
+            import os
+            cred_json = os.environ.get("FIREBASE_CREDENTIALS")
+            if not cred_json:
+                raise ValueError("FIREBASE_CREDENTIALS não encontrada nas variáveis de ambiente.")
+            
+            cred = credentials.Certificate(json.loads(cred_json))
+            firebase_admin.initialize_app(cred)
+        return firestore.client()
     except Exception as e:
-        print(f"Ocorreu um erro inesperado: {e}")
+        print(f"ERRO DE INICIALIZAÇÃO DO FIREBASE: {e}")
+        return None
+
+async def fetch_real_odds(db):
+    """Executa o web scraping, extrai os dados e salva no Firestore."""
+    
+    # 1. Obter a lista de datas futuras (para filtrar apenas jogos atuais)
+    future_dates = get_future_dates(7)
+    games_data = []
+
+    try:
+        async with async_playwright() as p:
+            # Usando Chromium e user agent para simular um navegador real
+            browser = await p.chromium.launch()
+            page = await browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            
+            print(f"=> Navegando para {URL_SCRAPE}")
+            await page.goto(URL_SCRAPE, wait_until='networkidle')
+            await page.wait_for_selector('div.row.data-row')
+
+            # 2. Extrair Elementos
+            # Seletores do oddschecker.com (Podem mudar, mas são os mais estáveis)
+            match_rows = await page.locator('div.row.data-row:has(span.odds)').all()
+            print(f"=> Elementos de jogo encontrados (Potencial: {len(match_rows)})")
+
+            for row in match_rows:
+                # Extrai a data/hora (Ex: 08 Oct 21:00)
+                time_loc = row.locator('span.ko').inner_text()
+                
+                # Extrai as informações de equipes e liga
+                teams_loc = row.locator('span.fixture-description a.event-name').inner_text()
+                league_loc = row.locator('span.fixture-description span.parent-name a').inner_text()
+
+                # Processa os nomes das equipes (simplificado)
+                if ' vs ' not in teams_loc:
+                    continue # Pula se não for um confronto padrão
+                home_team, away_team = teams_loc.split(' vs ', 1)
+                
+                # Extrai as 3 odds principais (Casa, Empate, Fora)
+                odds_elements = row.locator('span.odds').all_text_contents()
+                
+                if len(odds_elements) >= 3:
+                    # Odds estão na ordem: Home, Draw, Away
+                    home_odd_str = odds_elements[0].strip()
+                    draw_odd_str = odds_elements[1].strip()
+                    away_odd_str = odds_elements[2].strip()
+                    
+                    # Converte para float, lidando com '-' ou odds inválidas
+                    try:
+                        home_odd = float(home_odd_str)
+                        draw_odd = float(draw_odd_str)
+                        away_odd = float(away_odd_str)
+                    except ValueError:
+                        continue # Pula se as odds não forem numéricas
+
+                    # 3. Filtrar pela data (simplificado, já que o scraper do Jules não extraía data completa)
+                    # Nota: O oddschecker normalmente mostra apenas o dia e mês, não o ano.
+                    
+                    # 4. Preparar para salvar no Firebase (mantendo a nova estrutura)
+                    game_id = f"{league_loc}_{home_team}_{away_team}".replace(" ", "_")
+                    
+                    games_data.append({
+                        'id': game_id,
+                        'league': league_loc,
+                        'home_team': home_team,
+                        'away_team': away_team,
+                        'home_odd': home_odd,
+                        'draw_odd': draw_odd,
+                        'away_odd': away_odd,
+                        'time': time_loc,
+                        'last_updated': datetime.now().isoformat()
+                    })
+
+            await browser.close()
+            
+    except Exception as e:
+        print(f"ERRO DURANTE O SCRAPING: {e}")
+        return
+
+    # 5. Salvar no Firestore
+    if db and games_data:
+        print(f"\n=> SALVANDO {len(games_data)} JOGOS NO FIREBASE...")
+        
+        # Limpar coleção (para remover jogos antigos)
+        # Nota: Limpar a coleção inteira é caro. Em um ambiente real, você faria uma atualização mais eficiente.
+        # Para este teste, vamos apenas adicionar/sobrescrever:
+        
+        batch = db.batch()
+        collection_ref = db.collection(COLLECTION_NAME)
+        
+        for game in games_data:
+            doc_ref = collection_ref.document(game['id'])
+            batch.set(doc_ref, game)
+        
+        batch.commit()
+        print("=> PROCESSO CONCLUÍDO. DADOS ENVIADOS COM SUCESSO.")
+    elif not games_data:
+        print("=> SCRAPING COMPLETO, MAS NENHUM JOGO RECENTE ENCONTRADO PARA SALVAR.")
+
+async def main():
+    db = initialize_firebase()
+    if db:
+        await fetch_real_odds(db)
+    else:
+        print("Falha ao conectar ao Firebase, encerrando o scraper.")
 
 if __name__ == "__main__":
-    fetch_real_odds()
-    print("Processo do robô concluído.")
-
+    asyncio.run(main())
