@@ -1,34 +1,25 @@
 import asyncio
 from playwright.async_api import async_playwright
-import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta
-import locale
+import firebase_admin
+import json
+import os
+import re
 
 # --- CONFIGURAÇÃO ---
-# O Jules já injetou a credencial do FIREBASE_CREDENTIALS
 COLLECTION_NAME = 'matches-Flashscore'
+# URL da página de futebol futuro no oddschecker (geralmente a melhor para raspagem)
 URL_SCRAPE = 'https://www.oddschecker.com/football' 
-
-# Configura o locale para garantir que a data em português/inglês seja lida corretamente
-# Tenta pt_BR primeiro e depois en_US como fallback
-try:
-    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
-except locale.Error:
-    try:
-        locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')
-    except locale.Error:
-        pass # Mantém o default se falhar
 
 def initialize_firebase():
     """Inicializa o SDK Admin do Firebase usando credenciais injetadas."""
     try:
         if not firebase_admin._apps:
-            import json
-            import os
             cred_json = os.environ.get("FIREBASE_CREDENTIALS")
             if not cred_json:
-                raise ValueError("FIREBASE_CREDENTIALS não encontrada nas variáveis de ambiente.")
+                print("ERRO: FIREBASE_CREDENTIALS não encontrada.")
+                return None
             
             cred = credentials.Certificate(json.loads(cred_json))
             firebase_admin.initialize_app(cred)
@@ -37,99 +28,121 @@ def initialize_firebase():
         print(f"ERRO DE INICIALIZAÇÃO DO FIREBASE: {e}")
         return None
 
-async def fetch_real_odds(db):
+def clean_odd_value(odd_str):
+    """Limpa e converte string de odd (pode ser '-' ou 'EVS') para float."""
+    odd_str = odd_str.strip()
+    if not odd_str or odd_str in ('-', 'EVS'):
+        return 0.0
+    try:
+        return float(odd_str)
+    except ValueError:
+        return 0.0
+
+async def fetch_and_save_odds(db):
     """Executa o web scraping, extrai os dados e salva no Firestore."""
     
     games_data = []
+    today = datetime.now().date()
 
     try:
         async with async_playwright() as p:
+            # Lança o navegador Chromium
             browser = await p.chromium.launch()
             page = await browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
             
             print(f"=> Navegando para {URL_SCRAPE}")
-            await page.goto(URL_SCRAPE, wait_until='domcontentloaded')
+            await page.goto(URL_SCRAPE, wait_until='networkidle', timeout=60000)
             
-            # Espera pelos elementos principais da grade de jogos
-            await page.wait_for_selector('div.match-event-container', timeout=30000)
+            # 1. Espera pelo elemento que contém todos os jogos.
+            await page.wait_for_selector('div.data-row-container', timeout=30000)
 
-            # 2. Extrair Elementos
-            # Seletores do oddschecker.com para jogos (Pode variar!)
-            match_rows = await page.locator('div.match-event-container').all()
-            print(f"=> Elementos de jogo encontrados (Potencial: {len(match_rows)})")
-
-            # Data de corte: apenas jogos a partir de hoje
-            today_date = datetime.now().date()
+            # 2. Extrai as linhas de jogos
+            match_rows = await page.locator('div.data-row').all()
+            print(f"=> Encontrados {len(match_rows)} elementos potenciais para processamento.")
 
             for row in match_rows:
-                # Tentativa de extração de dados
                 try:
-                    # Tenta extrair a liga e os times
-                    teams_loc = await row.locator('div.fixture-description a.event-name').inner_text()
-                    league_loc = await row.locator('div.fixture-description span.parent-name a').inner_text()
+                    # Extração da Liga e Times
+                    league_element = await row.locator('span.fixture-description span.parent-name a').first.inner_text()
+                    teams_element = await row.locator('span.fixture-description a.event-name').first.inner_text()
                     
-                    # Extrai a data e hora
+                    # Extração da data/hora (Ex: '08 Oct', '21:00')
                     time_data = await row.locator('span.ko').inner_text()
-                    date_data = await row.locator('div.ko-date').inner_text()
-                    
-                    # Tenta converter a data (necessário para o filtro)
-                    # Ex: '08 Oct' + Ano Atual
-                    full_date_str = f"{date_data} {datetime.now().year} {time_data.replace(':', '.')}"
-                    
-                    # O formato de data do oddschecker é complexo. Vamos apenas pegar o dia e mês e verificar se é futuro.
-                    # Simplificação extrema: Assume que se o scraper achou, ele é relevante, e só remove os passados.
-                    
-                    # Processa os nomes das equipes (simplificado)
-                    if ' vs ' not in teams_loc:
+                    date_data_str = await row.locator('div.ko-date').inner_text()
+
+                    # Processamento Simples de Data para Filtragem
+                    # Tenta converter para um objeto datetime para saber se é futuro
+                    match_datetime = None
+                    try:
+                        # Ex: '08 Oct' + Ano Atual (Ex: '08 Oct 2025')
+                        date_with_year = f"{date_data_str} {today.year}"
+                        match_datetime = datetime.strptime(date_with_year, '%d %b %Y').date()
+                    except ValueError:
+                        # Falha na conversão de data (ignorar filtro se não for possível verificar)
+                        pass
+
+                    # Filtro de Data: Ignora jogos que já passaram (Obrigatório)
+                    if match_datetime and match_datetime < today:
                         continue 
-                    home_team, away_team = teams_loc.split(' vs ', 1)
+
+                    # Processa os nomes das equipes (home vs away)
+                    if ' vs ' not in teams_element:
+                        continue 
+                    home_team, away_team = teams_element.split(' vs ', 1)
                     
-                    # Extrai as 3 odds principais (Casa, Empate, Fora)
-                    odds_elements = await row.locator('span.odds div.odds-container span.odds').all_text_contents()
+                    # Extração das Odds (os 3 primeiros valores de span.odds)
+                    odds_elements = await row.locator('div.odds-container span.odds').all_text_contents()
                     
                     if len(odds_elements) >= 3:
-                        home_odd_str = odds_elements[0].strip()
-                        draw_odd_str = odds_elements[1].strip()
-                        away_odd_str = odds_elements[2].strip()
+                        home_odd = clean_odd_value(odds_elements[0])
+                        draw_odd = clean_odd_value(odds_elements[1])
+                        away_odd = clean_odd_value(odds_elements[2])
                         
-                        try:
-                            home_odd = float(home_odd_str)
-                            draw_odd = float(draw_odd_str)
-                            away_odd = float(away_odd_str)
-                        except ValueError:
-                            continue 
+                        # Verifica se as odds são válidas (maior que 1.0 para Home/Away)
+                        if home_odd <= 1.0 or away_odd <= 1.0:
+                            continue
 
-                        # 4. Preparar para salvar no Firebase
-                        game_id = f"{league_loc}_{home_team}_{away_team}_{date_data}".replace(" ", "_").replace(":", "")
+                        # Geração de ID Único
+                        game_id = re.sub(r'\W+', '', f"{league_element}_{home_team}_{away_team}_{date_data_str}").lower()
                         
                         games_data.append({
                             'id': game_id,
-                            'league': league_loc,
+                            'league': league_element,
                             'home_team': home_team,
                             'away_team': away_team,
                             'home_odd': home_odd,
                             'draw_odd': draw_odd,
                             'away_odd': away_odd,
                             'time': time_data,
+                            'date': date_data_str, # Mantém a data no formato do site para referência
                             'last_updated': datetime.now().isoformat()
                         })
 
                 except Exception as e:
-                    # Ignora linhas que falham na extração (pode ser linha de publicidade ou título)
+                    # Logs de erro de linha para debug (opcional, mas ajuda)
+                    # print(f"Erro ao processar linha: {e}")
                     continue 
 
             await browser.close()
             
     except Exception as e:
-        print(f"ERRO DURANTE O SCRAPING GERAL: {e}")
+        print(f"ERRO CRÍTICO NO SCRAPING: {e}")
         return
 
-    # 5. Salvar no Firestore
+    # 3. Salvar no Firestore
     if db and games_data:
         print(f"\n=> SALVANDO {len(games_data)} JOGOS NO FIREBASE...")
-        batch = db.batch()
+        
+        # Limpar coleção antiga e salvar os novos (Estratégia mais segura)
         collection_ref = db.collection(COLLECTION_NAME)
         
+        # Opcional: Deletar todos os documentos antigos
+        # docs = collection_ref.stream()
+        # for doc in docs:
+        #     doc.reference.delete()
+        
+        # Salvar novos dados
+        batch = db.batch()
         for game in games_data:
             doc_ref = collection_ref.document(game['id'])
             batch.set(doc_ref, game)
@@ -137,12 +150,12 @@ async def fetch_real_odds(db):
         batch.commit()
         print("=> PROCESSO CONCLUÍDO. DADOS ENVIADOS COM SUCESSO.")
     elif not games_data:
-        print("=> SCRAPING COMPLETO, MAS NENHUM JOGO FOI ENCONTRADO PARA SALVAR.")
+        print(f"=> SCRAPING COMPLETO. 0 JOGOS ENCONTRADOS PARA SALVAR.")
 
 async def main():
     db = initialize_firebase()
     if db:
-        await fetch_real_odds(db)
+        await fetch_and_save_odds(db)
     else:
         print("Falha ao conectar ao Firebase, encerrando o scraper.")
 
