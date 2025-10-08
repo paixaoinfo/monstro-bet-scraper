@@ -119,10 +119,7 @@ async def main():
             for i in range(7):
                 await page.wait_for_timeout(2000)
 
-                date_text_element = page.locator("p.DateWrapper_d7psjzv")
-                await date_text_element.wait_for(state="visible", timeout=10000)
-                date_text = await date_text_element.inner_text()
-
+                date_text = await page.locator("p.DateWrapper_d7psjzv").inner_text()
                 scrape_date = parse_date_string(date_text)
 
                 if not scrape_date:
@@ -132,33 +129,40 @@ async def main():
                 formatted_date = scrape_date.strftime('%Y-%m-%d')
                 print(f"\n--- Scraping day {i+1}/7: {date_text} ({formatted_date}) ---")
 
-                match_rows = await page.locator("div.RowWrapper_r6ns4d6").all()
-                print(f"Found {len(match_rows)} match rows for this day.")
+                # New structured approach: Iterate through league containers
+                league_containers = await page.locator("article.CardWrapper_c1m7xrb5").all()
+                print(f"Found {len(league_containers)} league containers for this day.")
 
-                for row in match_rows:
-                    team_name_elements = await row.locator("div.TeamWrapper_tedwdbv p").all()
-                    odds_buttons = await row.locator("button.bestOddsButton_b3gzcta").all()
+                for league_card in league_containers:
+                    league_name = await league_card.locator(".AccordionText_a13j5kn0").inner_text()
 
-                    if len(team_name_elements) == 2 and len(odds_buttons) == 3:
-                        home_team = await team_name_elements[0].inner_text()
-                        away_team = await team_name_elements[1].inner_text()
-                        home_odd_frac = await odds_buttons[0].inner_text()
-                        draw_odd_frac = await odds_buttons[1].inner_text()
-                        away_odd_frac = await odds_buttons[2].inner_text()
+                    match_rows = await league_card.locator("div.RowWrapper_r6ns4d6").all()
 
-                        home_odd_dec = convert_fractional_to_decimal(home_odd_frac)
-                        draw_odd_dec = convert_fractional_to_decimal(draw_odd_frac)
-                        away_odd_dec = convert_fractional_to_decimal(away_odd_frac)
+                    for row in match_rows:
+                        team_name_elements = await row.locator("div.TeamWrapper_tedwdbv p").all()
+                        odds_buttons = await row.locator("button.bestOddsButton_b3gzcta").all()
 
-                        if all([home_team, away_team, home_odd_dec, draw_odd_dec, away_odd_dec]):
-                            all_scraped_data.append({
-                                "date": formatted_date,
-                                "home_team": home_team.strip(),
-                                "away_team": away_team.strip(),
-                                "home_odd": home_odd_dec,
-                                "draw_odd": draw_odd_dec,
-                                "away_odd": away_odd_dec,
-                            })
+                        if len(team_name_elements) == 2 and len(odds_buttons) == 3:
+                            home_team = await team_name_elements[0].inner_text()
+                            away_team = await team_name_elements[1].inner_text()
+                            home_odd_frac = await odds_buttons[0].inner_text()
+                            draw_odd_frac = await odds_buttons[1].inner_text()
+                            away_odd_frac = await odds_buttons[2].inner_text()
+
+                            home_odd_dec = convert_fractional_to_decimal(home_odd_frac)
+                            draw_odd_dec = convert_fractional_to_decimal(draw_odd_frac)
+                            away_odd_dec = convert_fractional_to_decimal(away_odd_frac)
+
+                            if all([home_team, away_team, home_odd_dec, draw_odd_dec, away_odd_dec]):
+                                all_scraped_data.append({
+                                    "date": formatted_date,
+                                    "league": league_name.strip(),
+                                    "home_team": home_team.strip(),
+                                    "away_team": away_team.strip(),
+                                    "home_odd": home_odd_dec,
+                                    "draw_odd": draw_odd_dec,
+                                    "away_odd": away_odd_dec,
+                                })
                 
                 next_day_button = page.locator('button.ArrowButton_a1t2hqrk:has(.ArrowRight_aiogb61)')
                 if await next_day_button.is_disabled():
