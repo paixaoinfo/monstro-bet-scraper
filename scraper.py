@@ -2,9 +2,12 @@ import asyncio
 from playwright.async_api import async_playwright
 import json
 import os
+import re
 from fractions import Fraction
 import firebase_admin
 from firebase_admin import credentials, firestore
+from datetime import datetime, timedelta
+import locale
 
 def convert_fractional_to_decimal(fractional_odd):
     """Converts fractional odds string (e.g., '5/2') to decimal format."""
@@ -20,21 +23,16 @@ def convert_fractional_to_decimal(fractional_odd):
         return None
 
 def initialize_firebase():
-    """
-    Initializes the Firebase Admin SDK using credentials from an environment variable.
-    """
+    """Initializes the Firebase Admin SDK using credentials from an environment variable."""
     try:
         cred_json_str = os.environ.get('FIREBASE_CREDENTIALS')
         if not cred_json_str:
             print("FIREBASE_CREDENTIALS environment variable not set.")
             return None
-
         cred_json = json.loads(cred_json_str)
         cred = credentials.Certificate(cred_json)
-
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred)
-
         print("Firebase initialized successfully.")
         return firestore.client()
     except Exception as e:
@@ -46,11 +44,9 @@ def upload_to_firestore(db, data, collection_name):
     if not db or not data:
         print("Database not initialized or no data to upload.")
         return
-
-    print(f"Starting upload to '{collection_name}' collection...")
+    print(f"\nStarting upload to '{collection_name}' collection...")
     collection_ref = db.collection(collection_name)
 
-    # Clear the collection
     docs = collection_ref.stream()
     deleted_count = 0
     for doc in docs:
@@ -58,33 +54,54 @@ def upload_to_firestore(db, data, collection_name):
         deleted_count += 1
     print(f"Cleared {deleted_count} documents from the collection.")
 
-    # Upload new data
     uploaded_count = 0
     for record in data:
         collection_ref.add(record)
         uploaded_count += 1
     print(f"Successfully uploaded {uploaded_count} new documents.")
 
+def parse_date_string(date_text):
+    """Parses various date string formats from oddschecker, handling year changeover."""
+    try:
+        locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')
+    except locale.Error:
+        print("Warning: Could not set locale to en_US.UTF-8. Date parsing may fail.")
+
+    current_date = datetime.now()
+    if date_text.lower() == 'today':
+        return current_date
+    if date_text.lower() == 'tomorrow':
+        return current_date + timedelta(days=1)
+
+    cleaned_date_text = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', date_text).replace(',', '')
+
+    try:
+        # Attempt to parse format like "Thursday 9 October" or "Wed 10 Oct"
+        parsed_date = datetime.strptime(f"{cleaned_date_text} {current_date.year}", '%A %d %B %Y')
+    except ValueError:
+        try:
+            parsed_date = datetime.strptime(f"{cleaned_date_text} {current_date.year}", '%a %d %b %Y')
+        except ValueError:
+            print(f"CRITICAL: Could not parse date: {date_text}")
+            return None
+
+    # Handle year changeover (e.g., if it's Dec and we're scraping for Jan)
+    if parsed_date.month < current_date.month:
+        return parsed_date.replace(year=current_date.year + 1)
+    else:
+        return parsed_date
 
 async def main():
-    """
-    Main function to scrape odds from oddschecker.com, save them to a file,
-    and upload them to Firebase.
-    Note: This scraper targets the main football page of oddschecker.com.
-    A more advanced implementation would be required to navigate to and scrape
-    all the specific leagues mentioned in the initial project requirements.
-    """
     db = initialize_firebase()
     if not db:
         print("Halting execution due to Firebase initialization failure.")
-        print("Please ensure the FIREBASE_CREDENTIALS environment variable is set correctly.")
         return
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         
-        scraped_data = []
+        all_scraped_data = []
 
         try:
             target_url = "https://www.oddschecker.com/football"
@@ -101,49 +118,65 @@ async def main():
             except Exception:
                 print("Region pop-up not found or already handled.")
 
-            match_rows = await page.locator("div.RowWrapper_r6ns4d6").all()
-            print(f"Found {len(match_rows)} match rows.")
+            for i in range(7):
+                await page.wait_for_timeout(2000)
 
-            for row in match_rows:
-                team_name_elements = await row.locator("div.TeamWrapper_tedwdbv p").all()
-                odds_buttons = await row.locator("button.bestOddsButton_b3gzcta").all()
+                date_text_element = page.locator("p.DateWrapper_d7psjzv")
+                await date_text_element.wait_for(state="visible", timeout=10000)
+                date_text = await date_text_element.inner_text()
 
-                if len(team_name_elements) == 2 and len(odds_buttons) == 3:
-                    home_team = await team_name_elements[0].inner_text()
-                    away_team = await team_name_elements[1].inner_text()
+                scrape_date = parse_date_string(date_text)
 
-                    home_odd_frac = await odds_buttons[0].inner_text()
-                    draw_odd_frac = await odds_buttons[1].inner_text()
-                    away_odd_frac = await odds_buttons[2].inner_text()
+                if not scrape_date:
+                    print(f"Skipping day {i+1} due to unparsable date.")
+                    continue
 
-                    home_odd_dec = convert_fractional_to_decimal(home_odd_frac)
-                    draw_odd_dec = convert_fractional_to_decimal(draw_odd_frac)
-                    away_odd_dec = convert_fractional_to_decimal(away_odd_frac)
+                formatted_date = scrape_date.strftime('%Y-%m-%d')
+                print(f"\n--- Scraping day {i+1}/7: {date_text} ({formatted_date}) ---")
 
-                    if all([home_team, away_team, home_odd_dec, draw_odd_dec, away_odd_dec]):
-                        scraped_data.append({
-                            "home_team": home_team.strip(),
-                            "away_team": away_team.strip(),
-                            "home_odd": home_odd_dec,
-                            "draw_odd": draw_odd_dec,
-                            "away_odd": away_odd_dec,
-                        })
+                match_rows = await page.locator("div.RowWrapper_r6ns4d6").all()
+                print(f"Found {len(match_rows)} match rows for this day.")
 
-            if scraped_data:
-                file_path = "oddschecker.json" # Corrected filename
-                with open(file_path, 'w') as f:
-                    json.dump(scraped_data, f, indent=2)
-                print(f"\nSuccessfully extracted and saved data for {len(scraped_data)} matches to {file_path}.")
+                for row in match_rows:
+                    team_name_elements = await row.locator("div.TeamWrapper_tedwdbv p").all()
+                    odds_buttons = await row.locator("button.bestOddsButton_b3gzcta").all()
+
+                    if len(team_name_elements) == 2 and len(odds_buttons) == 3:
+                        home_team = await team_name_elements[0].inner_text()
+                        away_team = await team_name_elements[1].inner_text()
+                        home_odd_frac = await odds_buttons[0].inner_text()
+                        draw_odd_frac = await odds_buttons[1].inner_text()
+                        away_odd_frac = await odds_buttons[2].inner_text()
+
+                        home_odd_dec = convert_fractional_to_decimal(home_odd_frac)
+                        draw_odd_dec = convert_fractional_to_decimal(draw_odd_frac)
+                        away_odd_dec = convert_fractional_to_decimal(away_odd_frac)
+
+                        if all([home_team, away_team, home_odd_dec, draw_odd_dec, away_odd_dec]):
+                            all_scraped_data.append({
+                                "date": formatted_date,
+                                "home_team": home_team.strip(),
+                                "away_team": away_team.strip(),
+                                "home_odd": home_odd_dec,
+                                "draw_odd": draw_odd_dec,
+                                "away_odd": away_odd_dec,
+                            })
                 
-                upload_to_firestore(db, scraped_data, "matches-flashscore")
+                next_day_button = page.locator('button.ArrowButton_a1t2hqrk:has(.ArrowRight_aiogb61)')
+                if await next_day_button.is_disabled():
+                    print("Next day button is disabled. Ending scrape.")
+                    break
+                await next_day_button.click()
+
+            if all_scraped_data:
+                # Omit saving to local file in final version to keep the repository clean.
+                print(f"\nSuccessfully extracted data for {len(all_scraped_data)} matches over 7 days.")
+                upload_to_firestore(db, all_scraped_data, "matches-flashscore")
             else:
-                print("\nNo data was extracted, so no file was created and nothing was uploaded.")
+                print("\nNo data was extracted across the 7-day period.")
 
         except Exception as e:
             print(f"An error occurred: {e}")
-            # Screenshots are for debugging and should not be committed.
-            # await page.screenshot(path="error_screenshot_oddschecker.png")
-            # print("Screenshot saved to error_screenshot_oddschecker.png")
 
         finally:
             await browser.close()
