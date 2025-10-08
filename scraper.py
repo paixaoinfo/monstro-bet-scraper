@@ -76,7 +76,6 @@ def parse_date_string(date_text):
     cleaned_date_text = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', date_text).replace(',', '')
 
     try:
-        # Attempt to parse format like "Thursday 9 October" or "Wed 10 Oct"
         parsed_date = datetime.strptime(f"{cleaned_date_text} {current_date.year}", '%A %d %B %Y')
     except ValueError:
         try:
@@ -85,7 +84,6 @@ def parse_date_string(date_text):
             print(f"CRITICAL: Could not parse date: {date_text}")
             return None
 
-    # Handle year changeover (e.g., if it's Dec and we're scraping for Jan)
     if parsed_date.month < current_date.month:
         return parsed_date.replace(year=current_date.year + 1)
     else:
@@ -168,10 +166,23 @@ async def main():
                     break
                 await next_day_button.click()
 
+            # --- VERIFICATION AND UPLOAD ---
             if all_scraped_data:
-                # Omit saving to local file in final version to keep the repository clean.
-                print(f"\nSuccessfully extracted data for {len(all_scraped_data)} matches over 7 days.")
-                upload_to_firestore(db, all_scraped_data, "matches-flashscore")
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                future_matches = [match for match in all_scraped_data if match['date'] >= today_str]
+
+                if not future_matches:
+                    print("\nVerification Log: No future matches found after filtering.")
+                else:
+                    dates = [match['date'] for match in future_matches]
+                    min_date = min(dates)
+                    max_date = max(dates)
+                    print("\n--- Verification Log ---")
+                    print(f"Total matches found for upload: {len(future_matches)}")
+                    print(f"Earliest match date: {min_date}")
+                    print(f"Latest match date: {max_date}")
+                    print("------------------------")
+                    upload_to_firestore(db, future_matches, "matches-flashscore")
             else:
                 print("\nNo data was extracted across the 7-day period.")
 
