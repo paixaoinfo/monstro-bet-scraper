@@ -168,17 +168,25 @@ async def main():
 
             # --- VERIFICATION AND UPLOAD ---
             if all_scraped_data:
-                today_str = datetime.now().strftime('%Y-%m-%d')
-                future_matches = [match for match in all_scraped_data if match['date'] >= today_str]
+                today = datetime.now().date()
+                print(f"\n--- Filtering Data ---")
+                print(f"Total matches scraped before filtering: {len(all_scraped_data)}")
+
+                future_matches = [
+                    match for match in all_scraped_data
+                    if datetime.strptime(match['date'], '%Y-%m-%d').date() >= today
+                ]
+
+                print(f"Total matches after filtering for current/future dates: {len(future_matches)}")
 
                 if not future_matches:
-                    print("\nVerification Log: No future matches found after filtering.")
+                    print("\nVerification Log: No future matches found after filtering. The database will not be updated.")
                 else:
                     dates = [match['date'] for match in future_matches]
                     min_date = min(dates)
                     max_date = max(dates)
                     print("\n--- Verification Log ---")
-                    print(f"Total matches found for upload: {len(future_matches)}")
+                    print(f"Total matches for upload: {len(future_matches)}")
                     print(f"Earliest match date: {min_date}")
                     print(f"Latest match date: {max_date}")
                     print("------------------------")
