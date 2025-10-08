@@ -79,6 +79,7 @@ async def fetch_and_save_odds(db):
                     except ValueError:
                         # Se falhar, tenta um formato mais longo
                         try:
+                            # Tenta outro formato comum no oddschecker
                             date_with_year = f"{date_data_str} {today.year}"
                             match_datetime = datetime.strptime(date_with_year, '%a %d %b %Y').date()
                         except ValueError:
