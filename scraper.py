@@ -111,18 +111,18 @@ async def main():
             print("Page loaded.")
 
             try:
-                close_button_selector = "span.PopupCloseIcon_pb1x1zx"
-                await page.wait_for_selector(close_button_selector, timeout=15000)
-                await page.click(close_button_selector)
-                print("Closed the region selection pop-up.")
+                # Clica no botão de aceitar cookies se ele aparecer
+                accept_cookies_button = page.locator('#onetrust-accept-btn-handler')
+                await accept_cookies_button.wait_for(state="visible", timeout=10000)
+                await accept_cookies_button.click()
+                print("Accepted cookies.")
                 await page.wait_for_timeout(2000)
             except Exception:
-                print("Region pop-up not found or already handled.")
+                print("Cookie consent button not found or already handled.")
 
             for i in range(7):
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000) # Aumenta a espera para o conteúdo carregar
 
-                # CORREÇÃO: Adicionados parênteses a .first() para que seja chamado como uma função.
                 date_text_element = page.locator('[data-testid="day-header"]').first()
                 await date_text_element.wait_for(state="visible", timeout=20000)
                 date_text = await date_text_element.inner_text()
@@ -145,6 +145,12 @@ async def main():
                     match_rows = await league_card.locator("div.RowWrapper_r6ns4d6").all()
 
                     for row in match_rows:
+                        # NOVO FILTRO: Verifica se a linha contém um horário, indicando que é um jogo real.
+                        time_element = await row.locator("time.TimeStamp_t1ovd3qr").count()
+                        if time_element == 0:
+                            # Se não houver elemento de tempo, pula esta linha.
+                            continue
+
                         team_name_elements = await row.locator("div.TeamWrapper_tedwdbv p").all()
                         odds_buttons = await row.locator("button.bestOddsButton_b3gzcta").all()
 
