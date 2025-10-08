@@ -122,8 +122,9 @@ async def main():
             for i in range(7):
                 await page.wait_for_timeout(2000)
 
-                date_text_element = page.locator("p.DateWrapper_d7psjzv")
-                await date_text_element.wait_for(state="visible", timeout=10000)
+                # CORREÇÃO: Seletor da data atualizado para uma versão mais robusta e tempo de espera aumentado.
+                date_text_element = page.locator('[data-testid="day-header"]').first()
+                await date_text_element.wait_for(state="visible", timeout=20000)
                 date_text = await date_text_element.inner_text()
 
                 scrape_date = parse_date_string(date_text)
