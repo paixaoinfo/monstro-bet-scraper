@@ -4,7 +4,7 @@ import json
 import os
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def initialize_firebase():
     """Initializes the Firebase Admin SDK using credentials from an environment variable."""
@@ -42,7 +42,7 @@ def upload_to_firestore(db, data, collection_name):
     batch.commit()
     print(f"Cleared {deleted_count} old documents from the '{collection_name}' collection.")
 
-    # Adiciona os novos documentos com ID único para evitar duplicados
+    # Adiciona os novos documentos com ID único
     uploaded_count = 0
     batch = db.batch()
     for record in data:
@@ -52,6 +52,23 @@ def upload_to_firestore(db, data, collection_name):
         uploaded_count += 1
     batch.commit()
     print(f"Successfully uploaded {uploaded_count} new documents.")
+
+def parse_date_header(header_text):
+    """Parses date headers like 'Today', 'Tomorrow', or 'Sunday, 13 Oct' into a YYYY-MM-DD string."""
+    header_text = header_text.lower()
+    today = datetime.now()
+    if 'today' in header_text:
+        return today.strftime('%Y-%m-%d')
+    if 'tomorrow' in header_text:
+        return (today + timedelta(days=1)).strftime('%Y-%m-%d')
+    try:
+        # Tenta extrair datas como "Sun 13 Oct"
+        date_part = header_text.split(', ')[-1]
+        # Adiciona o ano corrente para o parse
+        parsed_date = datetime.strptime(f"{date_part} {today.year}", '%a %d %b %Y')
+        return parsed_date.strftime('%Y-%m-%d')
+    except ValueError:
+        return today.strftime('%Y-%m-%d') # Fallback para o dia de hoje
 
 async def scrape_oddschecker():
     """Main function to scrape football odds by interacting with the page."""
@@ -64,73 +81,75 @@ async def scrape_oddschecker():
             print("Navigating to oddschecker football page...")
             await page.goto("https://www.oddschecker.com/football", wait_until="networkidle", timeout=90000)
             print("Page loaded.")
+            
+            # Espera pelo contentor principal dos jogos
+            await page.wait_for_selector('div#oddsTableContainer', timeout=20000)
+            print("Main odds container loaded.")
 
-            # Tenta fechar o pop-up de geolocalização se ele aparecer
-            try:
-                popup_close_button = page.locator('button:has-text("Accept All")')
-                await popup_close_button.click(timeout=10000)
-                print("Accepted cookies.")
-            except Exception:
-                print("Cookie consent button not found or already handled.")
+            # Itera pelos dias disponíveis (até 7 dias no futuro)
+            for i in range(7):
+                await page.wait_for_timeout(2000) # Pausa para garantir que o conteúdo do dia carregou
+                
+                date_header_el = await page.query_selector('h2.title')
+                date_header = await date_header_el.inner_text() if date_header_el else 'Today'
+                current_date_str = parse_date_header(date_header)
+                print(f"\n--- Scraping day {i+1}: {date_header} ({current_date_str}) ---")
 
-            # Expande todas as ligas para garantir que os jogos fiquem visíveis no HTML
-            accordions = await page.locator('div[data-testid="accordion-header"]').all()
-            print(f"Found {len(accordions)} league accordions. Expanding all...")
-            for accordion in accordions:
-                try:
-                    await accordion.click()
-                    await page.wait_for_timeout(200) # Pequena pausa para a animação
-                except Exception:
-                    continue # Ignora se o clique falhar por algum motivo
+                # Extrai os dados dos jogos para o dia atual
+                match_rows = await page.locator('div.relative.h-full.w-full').all()
+                print(f"Found {len(match_rows)} match rows to process for this day.")
 
-            print("Finished expanding accordions.")
+                for row in match_rows:
+                    try:
+                        home_team_el = await row.query_selector('p.text-black.truncate')
+                        away_team_el = await row.query_selector('p.text-black.truncate >> nth=1')
+                        
+                        # Validação para garantir que estamos a olhar para uma linha de jogo real
+                        if not all([home_team_el, away_team_el]):
+                           continue
 
-            # Extrai os dados dos jogos visíveis
-            match_rows = await page.locator('div[data-testid^="match-row-"]').all()
-            print(f"Found {len(match_rows)} match rows to process.")
+                        home_team = await home_team_el.inner_text()
+                        away_team = await away_team_el.inner_text()
+                        
+                        time_el = await row.query_selector('div.text-xs.text-black')
+                        match_time = await time_el.inner_text() if time_el else 'N/A'
+                        
+                        league_el = await row.query_selector('p.text-gray-dark.truncate')
+                        league_name = await league_el.inner_text() if league_el else 'Unknown League'
 
-            for row in match_rows:
-                try:
-                    home_team = await row.locator('[data-testid="participant-1-name"]').inner_text()
-                    away_team = await row.locator('[data-testid="participant-2-name"]').inner_text()
-                    
-                    date_time_str = await row.locator('[data-testid="status-or-time"]').inner_text()
-                    # A data precisa ser construída a partir do contexto da página, assumimos hoje para simplificar
-                    # Uma implementação mais robusta buscaria o cabeçalho da data
-                    match_date = datetime.now().strftime('%Y-%m-%d')
-                    match_time = date_time_str if ':' in date_time_str else 'N/A'
+                        odds_elements = await row.locator('div.odds-button-best-odds').all()
+                        
+                        if len(odds_elements) == 3:
+                            home_odd = await odds_elements[0].inner_text()
+                            draw_odd = await odds_elements[1].inner_text()
+                            away_odd = await odds_elements[2].inner_text()
 
-                    league_element = row.locator('xpath=./ancestor::div[contains(@data-testid, "competition-")]//h2')
-                    league_name = await league_element.inner_text() if await league_element.count() > 0 else 'Unknown League'
+                            home_house = (await odds_elements[0].query_selector('img')).get_attribute('alt')
+                            draw_house = (await odds_elements[1].query_selector('img')).get_attribute('alt')
+                            away_house = (await odds_elements[2].query_selector('img')).get_attribute('alt')
 
-                    odds_elements = await row.locator('[data-testid$="-best-odds"]').all()
-                    
-                    if len(odds_elements) == 3:
-                        home_odd = await odds_elements[0].inner_text()
-                        draw_odd = await odds_elements[1].inner_text()
-                        away_odd = await odds_elements[2].inner_text()
-
-                        # Nomes das casas de aposta estão geralmente num elemento filho
-                        home_house = await odds_elements[0].locator('img').get_attribute('alt')
-                        draw_house = await odds_elements[1].locator('img').get_attribute('alt')
-                        away_house = await odds_elements[2].locator('img').get_attribute('alt')
-
-                        all_scraped_data.append({
-                            "date": match_date,
-                            "time": match_time.strip(),
-                            "league": league_name.strip(),
-                            "home_team": home_team.strip(),
-                            "away_team": away_team.strip(),
-                            "home_odd": float(home_odd),
-                            "draw_odd": float(draw_odd),
-                            "away_odd": float(away_odd),
-                            "home_house": home_house.strip(),
-                            "draw_house": draw_house.strip(),
-                            "away_house": away_house.strip(),
-                        })
-                except Exception as e:
-                    # print(f"Could not process a match row: {e}")
-                    continue
+                            all_scraped_data.append({
+                                "date": current_date_str,
+                                "time": match_time.strip(),
+                                "league": league_name.strip(),
+                                "home_team": home_team.strip(),
+                                "away_team": away_team.strip(),
+                                "home_odd": float(home_odd),
+                                "draw_odd": float(draw_odd),
+                                "away_odd": float(away_odd),
+                                "home_house": await home_house,
+                                "draw_house": await draw_house,
+                                "away_house": await away_house,
+                            })
+                    except Exception:
+                        continue
+                
+                # Clica no botão para ir para o próximo dia
+                next_day_button = page.locator('button[aria-label="Next Day"]')
+                if not await next_day_button.is_enabled():
+                    print("Next day button is not enabled. Ending scrape.")
+                    break
+                await next_day_button.click()
 
         except Exception as e:
             print(f"An error occurred during scraping: {e}")
