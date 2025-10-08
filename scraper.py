@@ -119,7 +119,10 @@ async def main():
             for i in range(7):
                 await page.wait_for_timeout(2000)
 
-                date_text = await page.locator("p.DateWrapper_d7psjzv").inner_text()
+                date_text_element = page.locator("p.DateWrapper_d7psjzv")
+                await date_text_element.wait_for(state="visible", timeout=10000)
+                date_text = await date_text_element.inner_text()
+
                 scrape_date = parse_date_string(date_text)
 
                 if not scrape_date:
@@ -129,7 +132,6 @@ async def main():
                 formatted_date = scrape_date.strftime('%Y-%m-%d')
                 print(f"\n--- Scraping day {i+1}/7: {date_text} ({formatted_date}) ---")
 
-                # New structured approach: Iterate through league containers
                 league_containers = await page.locator("article.CardWrapper_c1m7xrb5").all()
                 print(f"Found {len(league_containers)} league containers for this day.")
 
@@ -189,6 +191,13 @@ async def main():
                     dates = [match['date'] for match in future_matches]
                     min_date = min(dates)
                     max_date = max(dates)
+
+                    # Save to local file for verification
+                    file_path = "oddschecker.json"
+                    with open(file_path, 'w') as f:
+                        json.dump(future_matches, f, indent=2)
+                    print(f"Saved {len(future_matches)} matches to {file_path} for verification.")
+
                     print("\n--- Verification Log ---")
                     print(f"Total matches for upload: {len(future_matches)}")
                     print(f"Earliest match date: {min_date}")
