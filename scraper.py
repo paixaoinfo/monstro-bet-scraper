@@ -122,7 +122,7 @@ async def main():
             for i in range(7):
                 await page.wait_for_timeout(2000)
 
-                # CORREÇÃO: Seletor da data atualizado para uma versão mais robusta e tempo de espera aumentado.
+                # CORREÇÃO: Adicionados parênteses a .first() para que seja chamado como uma função.
                 date_text_element = page.locator('[data-testid="day-header"]').first()
                 await date_text_element.wait_for(state="visible", timeout=20000)
                 date_text = await date_text_element.inner_text()
